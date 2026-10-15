@@ -74,7 +74,10 @@ std::string_view NameOf(DataFormat fmt) {
     case DataFormat::FormatBc7:
         return "FormatBc7";
     default:
-        UNREACHABLE();
+        // bbport: a descriptor the game left garbage is logged with its format name, so this is
+        // reached from the logging path itself; the name is cosmetic, and stopping the game over
+        // one it cannot print is worse than saying so.
+        return "Unknown";
     }
 }
 
@@ -107,7 +110,8 @@ std::string_view NameOf(NumberFormat fmt) {
     case NumberFormat::Ubscaled:
         return "Unscaled";
     default:
-        UNREACHABLE();
+        // bbport: as above, for the descriptor's number format.
+        return "Unknown";
     }
 }
 

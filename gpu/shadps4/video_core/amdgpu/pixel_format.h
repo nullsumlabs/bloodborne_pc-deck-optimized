@@ -356,7 +356,10 @@ constexpr NumberConversion MapNumberConversion(const NumberFormat num_fmt,
         case DataFormat::Format16_16_16_16:
             return NumberConversion::Sint16ToSnormNz;
         default:
-            UNREACHABLE_MSG("data_fmt = {}", u32(data_fmt));
+            // bbport: SnormNz is bound with a packed format too (seen after minutes of play:
+            // data_fmt 7, 11_11_10), and the assert here stopped the game. Such a descriptor has
+            // no SnormNz meaning, so it is read without a conversion, as the default below does.
+            return NumberConversion::None;
         }
     }
     default:
