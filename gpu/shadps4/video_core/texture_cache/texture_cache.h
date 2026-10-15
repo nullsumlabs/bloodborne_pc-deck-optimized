@@ -8,7 +8,9 @@
 #include <chrono>
 #include "bbport_toggles.h"
 
+#include <array>
 #include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <unordered_set>
@@ -384,6 +386,14 @@ private:
     /// Removes the image and any views/surface metas that reference it.
     void DeleteImage(ImageId image_id);
 
+    /// bbport (GPU hang guard): destroys the image and its views once the GPU is past the current
+    /// tick (DeleteImage, directly or after BB_IMAGE_FREE_DELAY_FRAMES passes).
+    void ReclaimImage(ImageId image_id);
+
+    /// bbport (GPU hang guard): hands the images deleted at least BB_IMAGE_FREE_DELAY_FRAMES
+    /// passes ago to ReclaimImage (RunGarbageCollector, once a submission).
+    void FlushImageGraveyard();
+
     /// Touch the image in the LRU cache.
     void TouchImage(const Image& image);
 
@@ -415,6 +425,21 @@ private:
     /// bbport: gc_tick at each of the last 64 seconds (GarbageCollectImages).
     std::array<u64, 64> gc_tick_at_second{};
     u64 gc_second = 0;
+    /// bbport (GPU hang guard): the scheduler tick of the submission each of the last 64 gc ticks
+    /// belongs to. An image's last use is a tick (Image::tick_accessed_last) while an age here is
+    /// counted in collector passes, so GcRecentFrames needs both. 64 covers the 60 it allows.
+    std::array<u64, 64> sched_tick_at_gc{};
+    /// bbport (GPU hang guard): images deleted whose Vulkan objects are kept a little longer
+    /// (DeleteImage), oldest first (FlushImageGraveyard). Their slots are not reused meanwhile, so
+    /// a reference that outlived the registry change - an image cache memo, a scene proxy, the
+    /// upscaler's history - reads a still valid image instead of freed memory.
+    struct GraveImage {
+        u64 gc_tick;
+        ImageId image_id;
+    };
+    std::deque<GraveImage> image_graveyard;
+    std::mutex graveyard_mutex;
+    u64 gc_recent_kept = 0; ///< bbport: kept because in use in the last frames (the report)
     u64 trigger_gc_memory = 0;
     u64 pressure_gc_memory = 0;
     u64 critical_gc_memory = 0;

@@ -333,7 +333,10 @@ RSS, images and guest blocks in VRAM), `BB_PC_MODEL=1` (the new memory and trans
 0, the old model as in 0.3, is the default), `BB_ANISO=N` (anisotropic filtering of scene textures; 16 by
 default, 0 = the game's own),
 `BB_GC_IDLE_SECONDS=N` / `BB_VRAM_IDLE_SECONDS=N` (how long unused textures / buffers stay in VRAM;
-20 / 60), `BB_BREADCRUMBS=0` (no GPU breadcrumbs; with them a GPU hang names the draw or dispatch
+20 / 60), `BB_GC_RECENT_FRAMES=N` / `BB_IMAGE_FREE_DELAY_FRAMES=N` (the collector never frees a
+texture used in the last N passes - one per guest submission, several a frame - and keeps a
+deleted texture's Vulkan objects N passes longer; 48 / 32, 0 turns the guard off),
+`BB_BREADCRUMBS=0` (no GPU breadcrumbs; with them a GPU hang names the draw or dispatch
 it is stuck in), `BB_GPU_PROFILE=1` (GPU time per
 pass), `BB_FSR4_PROFILE=1` (GPU time per FSR 4 pass), `BB_UPSCALER=taa|fsr3|fsr4|fsr411|off|none`,
 `BB_FRAMES_AHEAD=N` (how many frames the GPU command thread may run ahead of the GPU; 1 by default,

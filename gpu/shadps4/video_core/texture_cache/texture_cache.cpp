@@ -26,6 +26,34 @@ namespace VideoCore {
 static constexpr u64 PageShift = 12;
 static constexpr u64 NumFramesBeforeRemoval = 32;
 
+/// bbport (GPU hang guard): the collector never frees, nor writes back, an image used in the last
+/// this many collector passes - one per guest submission, several a frame - whatever its LRU age
+/// says (BB_GC_RECENT_FRAMES, default 48; 0: off). An image bound through the image cache's memo
+/// is touched by nothing else in a frame, so it looked idle while the game was sampling it every
+/// frame: freed, it was re-created and uploaded again a moment later, and a GPU-written render
+/// target went through a synchronous write-back each time - stalls of 0.3-2 s in area loads before
+/// a VK_ERROR_DEVICE_LOST in a full-screen blit.
+static u64 GcRecentFrames() {
+    static const u64 frames = [] {
+        const char* env = std::getenv("BB_GC_RECENT_FRAMES");
+        return std::min<u64>(env && env[0] ? std::strtoull(env, nullptr, 10) : 48, 60);
+    }();
+    return frames;
+}
+
+/// bbport (GPU hang guard): a deleted image's Vulkan objects outlive its unregistration by this
+/// many collector passes, then the GPU's completion of the tick of that pass
+/// (BB_IMAGE_FREE_DELAY_FRAMES, default 32; 0: only the GPU tick, as before). A reference that
+/// outlived the registry change - an image cache memo, a scene proxy, the upscaler's history -
+/// then reads a still valid image instead of freed memory.
+static u64 ImageFreeDelayFrames() {
+    static const u64 frames = [] {
+        const char* env = std::getenv("BB_IMAGE_FREE_DELAY_FRAMES");
+        return std::min<u64>(env && env[0] ? std::strtoull(env, nullptr, 10) : 32, 240);
+    }();
+    return frames;
+}
+
 TextureCache::TextureCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& scheduler_,
                            Vulkan::Runtime& runtime_, AmdGpu::Liverpool* liverpool_,
                            BufferCache& buffer_cache_, PageManager& tracker_)
@@ -1250,11 +1278,25 @@ void TextureCache::GarbageCollectImages() {
     u64 below_tick = 0;
     size_t num_deletions = 0;
     u32 visited = 0;
+    // bbport (GPU hang guard): the submission tick GcRecentFrames() passes ago; an image accessed
+    // at or after it is in use. 0: the guard is off. Until that many passes have happened, every
+    // image counts as recent.
+    const u64 recent_frames = GcRecentFrames();
+    const u64 recent_tick =
+        recent_frames == 0 ? 0
+                           : (gc_tick >= recent_frames
+                                  ? std::max<u64>(
+                                        sched_tick_at_gc[(gc_tick - recent_frames) %
+                                                         sched_tick_at_gc.size()],
+                                        1)
+                                  : ~0ULL);
+    bool emergency_pass = false;
 
     // emergency: over the critical mark after evicting what was unused for a second.
     const auto configure = [&](bool allow_aggressive, bool emergency = false) {
         pressured = total_used_memory >= pressure_gc_memory;
         aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
+        emergency_pass = emergency;
         const u64 ticks_to_destroy = std::min<u64>(aggresive ? 160 : pressured ? 80 : 16, gc_tick);
         below_tick = gc_tick - ticks_to_destroy;
         if (!pressured && !aggresive) {
@@ -1277,10 +1319,24 @@ void TextureCache::GarbageCollectImages() {
         // tiled ones cannot be written back at all) neither use up the deletions nor stay first
         // in line. The oldest ten being such render targets stopped the collector for good, and
         // VRAM grew with every area visited up to the pressure mark (~10 GB on 16 GB).
-        if ((tiled && download) || (download && !pressured)) {
+        const auto keep = [&] {
             lru_cache.Touch(image.lru_id, gc_tick);
             BbStats::gc_kept_images.fetch_add(1, std::memory_order_relaxed);
             return false;
+        };
+        if ((tiled && download) || (download && !pressured)) {
+            return keep();
+        }
+        // bbport (GPU hang guard): an image the game used in the last BB_GC_RECENT_FRAMES passes,
+        // or whose GPU work has not finished, is never freed nor written back here, whatever its
+        // LRU age says (see GcRecentFrames). Only the emergency pass - the usage was still over
+        // the critical mark after the aggressive pass, where the alternative is a failed
+        // allocation - goes through it.
+        if (!emergency_pass && recent_tick != 0 &&
+            (image.tick_accessed_last >= recent_tick ||
+             !scheduler.IsFree(image.tick_accessed_last))) {
+            ++gc_recent_kept;
+            return keep();
         }
         --num_deletions;
         if (download) {
@@ -1326,13 +1382,15 @@ void TextureCache::GarbageCollectImages() {
         const auto now = std::chrono::steady_clock::now();
         if (now - gc_report_time >= std::chrono::seconds(5)) {
             std::printf("Texture cache: memory pressure, %llu of %llu MiB (critical %llu): "
-                        "%llu images evicted, %llu written back since the last report\n",
+                        "%llu images evicted, %llu written back, %llu in use kept since the last "
+                        "report\n",
                         (unsigned long long)(total_used_memory >> 20),
                         (unsigned long long)(pressure_gc_memory >> 20),
                         (unsigned long long)(critical_gc_memory >> 20),
-                        (unsigned long long)gc_evictions, (unsigned long long)gc_downloads);
+                        (unsigned long long)gc_evictions, (unsigned long long)gc_downloads,
+                        (unsigned long long)gc_recent_kept);
             gc_report_time = now;
-            gc_evictions = gc_downloads = 0;
+            gc_evictions = gc_downloads = gc_recent_kept = 0;
         }
     }
 }
@@ -1388,6 +1446,10 @@ void TextureCache::RunGarbageCollector() {
     SCOPE_EXIT {
         ++gc_tick;
     };
+    // bbport (GPU hang guard): this submission's tick (GcRecentFrames compares an image's last use
+    // with a tick, not with a pass), and the images deleted long enough ago (ImageFreeDelayFrames).
+    sched_tick_at_gc[gc_tick % sched_tick_at_gc.size()] = scheduler.CurrentTick();
+    FlushImageGraveyard();
 
     GarbageCollectImages();
     GarbageCollectSamplers();
@@ -1425,7 +1487,21 @@ void TextureCache::DeleteImage(ImageId image_id) {
         }
     }
 
-    // Reclaim image and any image views it references.
+    // bbport (GPU hang guard): kept for ImageFreeDelayFrames() more passes first
+    // (FlushImageGraveyard). Its slot is not reused meanwhile, so a reference that outlived the
+    // registry change reads a valid image.
+    if (ImageFreeDelayFrames() != 0) {
+        std::scoped_lock lk{graveyard_mutex};
+        image_graveyard.push_back({gc_tick, image_id});
+        return;
+    }
+    ReclaimImage(image_id);
+}
+
+void TextureCache::ReclaimImage(ImageId image_id) {
+    // Reclaim image and any image views it references. Deferred to the tick this runs at: a
+    // graveyard entry waits for the pass's own tick first, so the GPU is past the image's last use
+    // by the time its objects go.
     scheduler.DeferOperation([this, image_id] {
         Image& image = slot_images[image_id];
         for (auto& backing : image.backing_images) {
@@ -1435,6 +1511,16 @@ void TextureCache::DeleteImage(ImageId image_id) {
         }
         slot_images.erase(image_id);
     });
+}
+
+void TextureCache::FlushImageGraveyard() {
+    const u64 delay = ImageFreeDelayFrames();
+    std::scoped_lock lk{graveyard_mutex};
+    while (!image_graveyard.empty() && image_graveyard.front().gc_tick + delay <= gc_tick) {
+        // Deferred again: freed once the GPU has finished everything recorded until now.
+        ReclaimImage(image_graveyard.front().image_id);
+        image_graveyard.pop_front();
+    }
 }
 
 } // namespace VideoCore
