@@ -12,6 +12,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <new>
 #include <span>
 #include <utility>
 #include <vector>
@@ -623,15 +624,17 @@ public:
         return true;
     }
 
-    /// Raw storage in the chunk for a command's variable-length data; null when full.
+    /// Raw storage in the chunk for a command's variable-length data. bbport: a payload the chunk
+    /// cannot hold at all goes to a block of its own (AllocateOversized, BloodBorneButPc's spill)
+    /// instead of stopping the game; null only when the host is out of memory.
     void* Allocate(size_t bytes, size_t align) {
         const size_t offset = (used + align - 1) & ~(align - 1);
-        if (offset + bytes > Capacity) {
-            return nullptr;
+        if (offset + bytes <= Capacity) {
+            used = offset + bytes;
+            PrefetchAhead();
+            return storage + offset;
         }
-        used = offset + bytes;
-        PrefetchAhead();
-        return storage + offset;
+        return AllocateOversized(bytes, align);
     }
 
     void Execute(vk::CommandBuffer cmdbuf) {
@@ -643,6 +646,10 @@ public:
         }
         first = last = nullptr;
         used = 0;
+        // bbport: the spill blocks are empty again (their memory is kept for the next pass).
+        for (SpillBlock& block : spill_blocks) {
+            block.used = 0;
+        }
     }
 
     [[nodiscard]] bool Empty() const noexcept {
@@ -685,10 +692,55 @@ private:
         Func func;
     };
 
+    /// bbport: a block of its own for a payload the chunk cannot hold (BloodBorneButPc's spill).
+    /// Kept by the chunk and reused: a draw whose record data exceeds Capacity allocates its block
+    /// when the draw first shows up, not on every frame it appears in. Without one the payload had
+    /// nowhere to go and the assert in ReserveRecordData stopped the game ("oversized command
+    /// data").
+    struct SpillBlock {
+        std::unique_ptr<std::byte[]> bytes;
+        size_t size = 0;
+        size_t used = 0; ///< filled from the front each pass (Execute resets it)
+    };
+
+    /// bbport: places an oversized payload in the block reserved last, or in a new one when it does
+    /// not fit. A payload beyond what a draw could carry (or a failed allocation) returns null; the
+    /// caller reports that instead of writing through it.
+    void* AllocateOversized(size_t bytes, size_t align) {
+        static constexpr size_t Ceiling = 16 * 1024 * 1024;
+        static constexpr size_t MinBlock = 128 * 1024;
+        if (bytes > Ceiling) {
+            return nullptr;
+        }
+        if (!spill_blocks.empty()) {
+            SpillBlock& block = spill_blocks.back();
+            std::byte* const base = block.bytes.get();
+            const auto address = reinterpret_cast<uintptr_t>(base) + block.used;
+            const auto aligned = (address + align - 1) & ~uintptr_t(align - 1);
+            const size_t offset = size_t(aligned - reinterpret_cast<uintptr_t>(base));
+            if (offset + bytes <= block.size) {
+                block.used = offset + bytes;
+                return base + offset;
+            }
+        }
+        const size_t size = std::max(bytes + align, MinBlock);
+        std::unique_ptr<std::byte[]> block{new (std::nothrow) std::byte[size]};
+        if (!block) {
+            return nullptr;
+        }
+        std::byte* const base = block.get();
+        const auto address = reinterpret_cast<uintptr_t>(base);
+        const auto aligned = (address + align - 1) & ~uintptr_t(align - 1);
+        const size_t offset = size_t(aligned - address);
+        spill_blocks.push_back(SpillBlock{std::move(block), size, offset + bytes});
+        return base + offset;
+    }
+
     alignas(64) std::byte storage[Capacity];
     size_t used = 0;
     CommandBase* first{};
     CommandBase* last{};
+    std::vector<SpillBlock> spill_blocks; ///< bbport: oversized payloads (AllocateOversized)
 };
 
 class Scheduler {
@@ -867,7 +919,20 @@ public:
         if (!IsRecordingDeferred()) {
             return;
         }
-        ASSERT(bytes + 1024 <= RecordChunk::Capacity);
+        if (bytes + 1024 > RecordChunk::Capacity) {
+            // bbport: a payload a whole chunk cannot hold. Retiring the chunk cannot make room for
+            // it, so RecordChunk::Allocate keeps it in a block of its own and the draw carries on
+            // (BloodBorneButPc's spill; before this the assert here stopped the game). Reported a
+            // few times: a draw that needs one keeps needing one, and the size says which draw.
+            static std::atomic<u32> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 5) {
+                LOG_WARNING(Render_Vulkan,
+                            "record data of {} bytes does not fit a {}-byte chunk; keeping it in a "
+                            "block of its own",
+                            bytes, RecordChunk::Capacity);
+            }
+            return;
+        }
         if (RecordChunk::Capacity - CurrentChunk().Size() < bytes + 1024) {
             RetireChunk();
         }
@@ -885,6 +950,9 @@ public:
         const size_t bytes = data.size_bytes();
         ReserveRecordData(bytes + alignof(T));
         auto* dst = static_cast<T*>(CurrentChunk().Allocate(bytes, alignof(T)));
+        // bbport: only a failed allocation or an absurd size reaches this (see Allocate); name it
+        // rather than copy through a null pointer.
+        ASSERT_MSG(dst != nullptr, "cannot record {} bytes of record data", bytes);
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};
     }
