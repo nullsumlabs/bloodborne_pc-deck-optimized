@@ -431,6 +431,10 @@ private:
     bool IsComputeMetaClear(const Pipeline* pipeline);
     bool IsComputeImageCopy(const Pipeline* pipeline, bool dry_run = false);
     bool IsComputeImageClear(const Pipeline* pipeline);
+    /// bbport BB_COPY_IMAGE_TRACE=1|hash[,hash] (diagnostics, no behaviour change): what a
+    /// compute dispatch binds, whether each buffer range aliases a registered image, the copy
+    /// list the copy shaders read, and which IsComputeImageCopy predicate decides the dispatch.
+    void TraceImageCopyCandidate(const Pipeline* pipeline);
 
 private:
     friend class VideoCore::BufferCache;

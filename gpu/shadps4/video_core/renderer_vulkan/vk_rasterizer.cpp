@@ -2350,6 +2350,7 @@ bool Rasterizer::BindResources(const Pipeline* pipeline) {
     BB_SECTION(BindResources);
     NoteResStats(pipeline);
     {
+        TraceImageCopyCandidate(pipeline);
         // bbport BB_HLE_STATS=1 (diagnostics): how often the compute shader substitutions fire.
         static const bool hle_stats = std::getenv("BB_HLE_STATS") != nullptr;
         // BB_HLE_OFF=mask (experiment): 1 image copy, 2 metadata clear, 4 image clear run as the
@@ -2948,6 +2949,164 @@ bool Rasterizer::IsComputeImageClear(const Pipeline* pipeline) {
     };
     runtime.ClearImage(&image1, range, clear);
     return true;
+}
+
+void Rasterizer::TraceImageCopyCandidate(const Pipeline* pipeline) {
+    // bbport BB_COPY_IMAGE_TRACE=1 (every compute shader) or =hash[,hash] (diagnostics, no
+    // behaviour change): what a dispatch binds, whether each buffer range aliases a registered
+    // image, the copy list the copy shaders read, and the first IsComputeImageCopy predicate
+    // that declines it. Written for goal 1 (image-source copies for the guest 3d5ebf4e memcpy).
+    static const bool enabled = [] {
+        const char* env = std::getenv("BB_COPY_IMAGE_TRACE");
+        return env && env[0] != '\0' && !(env[0] == '0' && env[1] == '\0');
+    }();
+    if (!enabled || !pipeline->IsCompute()) {
+        return;
+    }
+    static const std::vector<u64> filter = [] {
+        const char* env = std::getenv("BB_COPY_IMAGE_TRACE");
+        std::vector<u64> hashes;
+        if (std::strcmp(env, "1") == 0 || std::strcmp(env, "all") == 0) {
+            return hashes; // empty: every shader
+        }
+        for (const char* at = env; at && *at;) {
+            char* end = nullptr;
+            const u64 hash = std::strtoull(at, &end, 16);
+            if (end == at) {
+                hashes.clear();
+                return hashes; // unparseable: every shader
+            }
+            hashes.push_back(hash);
+            at = (end && *end == ',') ? end + 1 : nullptr;
+        }
+        return hashes;
+    }();
+    const auto& info = pipeline->GetStage(Shader::SwStage::Compute);
+    if (!filter.empty() && std::ranges::find(filter, info.pgm_hash) == filter.end()) {
+        return;
+    }
+    // Every shader: the first few of each, up to a cap. Named shaders: one line per 2 s, so a
+    // single run gives samples over time.
+    if (filter.empty()) {
+        static std::unordered_map<u64, u32> counts;
+        static u64 total = 0;
+        if (++counts[info.pgm_hash] > 3 || ++total > 240) {
+            return;
+        }
+    } else {
+        static std::unordered_map<u64, std::chrono::steady_clock::time_point> last;
+        const auto now = std::chrono::steady_clock::now();
+        const auto it = last.find(info.pgm_hash);
+        if (it != last.end() && now - it->second < std::chrono::seconds(2)) {
+            return;
+        }
+        last[info.pgm_hash] = now;
+    }
+
+    const auto& cs = CsRegs();
+    const size_t own = ShaderBufferCount(info);
+    std::printf("Copy image trace: cs %016llx %ux%ux%u groups, %u threads/group, buffers %zu "
+                "(own %zu), images %zu, dma %d, xor %d\n",
+                (unsigned long long)info.pgm_hash, cs.dim_x, cs.dim_y, cs.dim_z,
+                cs.num_thread_x.full, info.buffers.size(), own, info.images.size(),
+                int(info.uses_dma), int(info.has_bitwise_xor));
+    for (size_t i = 0; i < info.buffers.size(); ++i) {
+        const auto& desc = info.buffers[i];
+        if (desc.IsSpecial()) {
+            std::printf("  buf%zu: special (type %u)\n", i, u32(desc.buffer_type));
+            continue;
+        }
+        const AmdGpu::Buffer sharp = desc.GetSharp(info);
+        std::printf("  buf%zu: %#llx+%u stride %u fmt %u/%u written %d formatted %d", i,
+                    (unsigned long long)sharp.base_address, u32(sharp.GetSize()),
+                    u32(sharp.GetStride()), u32(sharp.GetDataFmt()), u32(sharp.GetNumberFmt()),
+                    int(desc.is_written), int(desc.is_formatted));
+        if (sharp.base_address == 0 || sharp.GetSize() == 0) {
+            std::printf(" -> empty\n");
+            continue;
+        }
+        const VideoCore::ImageId id =
+            texture_cache.FindImageFromRange(sharp.base_address, sharp.GetSize(), false);
+        if (!id) {
+            std::printf(" -> no image\n");
+        } else {
+            const VideoCore::Image& image = texture_cache.GetImage(id);
+            std::printf(" -> image %#llx %ux%u fmt %u pitch %u bits %u guest %u flags %#x "
+                        "safe %d\n",
+                        (unsigned long long)image.info.guest_address, image.info.size.width,
+                        image.info.size.height, u32(image.info.pixel_format), image.info.pitch,
+                        image.info.num_bits, image.info.guest_size, u32(image.flags),
+                        int(image.SafeToDownload()));
+        }
+    }
+    // The copy shaders list their ranges as 12-byte {dst, src, end} records (vk_shader_hle.cpp).
+    for (size_t i = 0; i < info.buffers.size(); ++i) {
+        const auto& desc = info.buffers[i];
+        if (desc.IsSpecial() || !desc.is_formatted) {
+            continue;
+        }
+        const AmdGpu::Buffer sharp = desc.GetSharp(info);
+        if (sharp.GetStride() != 12 || !IsMapped(sharp.base_address, 12 * 4)) {
+            continue;
+        }
+        const auto* ctl = reinterpret_cast<const u32*>(sharp.base_address);
+        const u32 show = std::min<u32>(4, cs.dim_x);
+        std::printf("  buf%zu copy list (%u ranges):", i, cs.dim_x);
+        for (u32 j = 0; j < show; ++j) {
+            std::printf(" {dst %u src %u end %u}", ctl[j * 3 + 0], ctl[j * 3 + 1], ctl[j * 3 + 2]);
+        }
+        std::printf("\n");
+    }
+    // The verdict of the image-copy detector: the first predicate that makes it decline.
+    const char* verdict = "match (it becomes an image copy)";
+    if (cs.num_thread_x.full != 64) {
+        verdict = "threads/group != 64";
+    } else if (own != 2) {
+        verdict = "not exactly 2 own buffers";
+    } else if (!info.images.empty()) {
+        verdict = "textures bound";
+    } else if (!info.buffers[0].is_formatted || !info.buffers[1].is_formatted) {
+        verdict = "a buffer is not formatted";
+    } else if (info.buffers[0].is_written == info.buffers[1].is_written) {
+        verdict = "not exactly one written";
+    } else {
+        const AmdGpu::Buffer buf0 = info.buffers[0].GetSharp(info);
+        const AmdGpu::Buffer buf1 = info.buffers[1].GetSharp(info);
+        if (buf0.base_address == 0 || buf0.GetSize() == 0 || buf1.base_address == 0) {
+            verdict = "a buffer is null/empty";
+        } else if (buf0.GetSize() != buf1.GetSize()) {
+            verdict = "buffer sizes differ";
+        } else if (cs.dim_x != (buf0.GetSize() / 256)) {
+            verdict = "dim_x != size/256 (partial copy)";
+        } else {
+            const VideoCore::ImageId id0any =
+                texture_cache.FindImageFromRange(buf0.base_address, buf0.GetSize(), false);
+            const VideoCore::ImageId id0 =
+                texture_cache.FindImageFromRange(buf0.base_address, buf0.GetSize());
+            const VideoCore::ImageId id1 =
+                texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
+            if (!id0any) {
+                verdict = "source range is not a registered image";
+            } else if (!id0) {
+                verdict = "source image exists but is not safe to download (dirty)";
+            } else if (!id1) {
+                verdict = "destination range is not a registered image";
+            } else {
+                const VideoCore::Image& image0 = texture_cache.GetImage(id0);
+                const VideoCore::Image& image1 = texture_cache.GetImage(id1);
+                if (image0.info.guest_size != image1.info.guest_size) {
+                    verdict = "image guest_size differs";
+                } else if (image0.info.pitch != image1.info.pitch) {
+                    verdict = "image pitch differs";
+                } else if (image0.info.guest_size != buf0.GetSize()) {
+                    verdict = "image guest_size != buffer size";
+                } else if (image0.info.num_bits != image1.info.num_bits) {
+                    verdict = "image num_bits differs";
+                }
+            }
+        }
+    }
+    std::printf("  image copy: %s\n", verdict);
 }
 
 namespace {
