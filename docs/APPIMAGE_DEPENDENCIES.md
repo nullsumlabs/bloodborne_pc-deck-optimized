@@ -315,7 +315,7 @@ Open:
 - **The `AppRun` does not tell us how the 148 libraries were chosen** — the list here is what the
   package contains, and the recipe reproduces it by name.
 - **These binaries are the portable build**, not a Zen 2 one: the artifact predates
-  `build_steam_deck.sh`, so no `-march` item has been measured yet. Rebuilding it through
-  `bash build_steam_deck.sh` and the same AppDir step is what would produce the Deck-targeted
-  equivalent — and it needs a Linux x86-64 host (`packaging/appimage.sh` needs `readelf`, `nix` and
-  `nix-appimage`; an Ubuntu 24.04 box with `appimagetool` is what produced this one).
+  `build_steam_deck.sh`, so no `-march` item has been measured yet.
+  `bash build_steam_deck.sh && bash packaging/appimage-ubuntu.sh` is what produces the Deck-targeted
+  equivalent, on a Linux x86-64 host with `appimagetool` — this artifact came from an Ubuntu 24.04
+  box, while the nix path needs `readelf`, `nix` and `nix-appimage`.
