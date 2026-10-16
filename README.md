@@ -38,8 +38,7 @@ them can be reverted on its own. What was ported, what was already here and what
 Two of the fixes asked for were already in bbport and were not re-ported: freeing unused VRAM over a
 long session, and the larger game-memory pool for a scene above 1080p. Verified so far: the
 loader/runtime test suite, the scheduler block logic under ASan/UBSan, and the edited runtime files'
-syntax — but **the GPU tree itself has not been built** (the port was written on macOS); it needs a
-Linux build.
+syntax. Next goals are finding optimizations that can be somewhat easily implemented and for the Steam Deck specifically.
 
 
 -----------------
