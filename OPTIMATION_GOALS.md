@@ -40,7 +40,7 @@ measurements, 25–33 ms on the Deck at 720p.
 | 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | 0.5 ms of the 8.8 ms desktop frame (measured), ≈6% at most; ≈10–20% on the Deck, extrapolated | Medium | Open |
 | 2 | Parallel Vulkan recording (several command buffers) | CPU | Unmeasured ceiling — CPU was at 68% (545/800) at 4c/8t; ≈10–20% if half the idle capacity is recovered | Large | Not started |
 | 3 | Move the buffer side of a draw from stage B to stage A | CPU | ≤12% of stage B; ≈2–6% end-to-end | Medium | Planned |
-| 4 | Deck-targeted build: `-march`/`-mtune` + PGO profile | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | Open |
+| 4 | ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~ | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | **Done** — `build_steam_deck.sh`; Deck run pending |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread (9% + 4%); ≈3–6% end-to-end | Medium | Idea in docs |
 | 6 | Cheaper object motion vectors | CPU | ≤10% measured with motion off; ≈3–6% recoverable | Medium | Open |
 | 7 | Scope `-fno-omit-frame-pointer` to the loader | CPU | ≈0–2%, usually under 1% | Small | Open |
@@ -123,12 +123,20 @@ free — the doc's "waits most of the time" means it has room, not that the tran
 **Verify.** Stage A/stage B busy split in `BB_FRAME_STATS`; `BB_PIPE_VERIFY=N` for register-file
 equality across the stages; frame rate A/B in one run.
 
-## 4. Deck-targeted build: `-march`/`-mtune` + PGO profile
+## 4. ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~
 
-**Why.** There is no `-march`, `-mtune` or ISA level anywhere in `build.sh`, `gpu/CMakeLists.txt`,
+**Done** — `build_steam_deck.sh` (commit `622e59d`): build.sh plus `-march=znver2 -mtune=znver2` on
+every compiler invocation and on CMake's `CMAKE_C(XX)_FLAGS` (so the subprojects get it too), meaning
+`bash build_steam_deck.sh && bash packaging/appimage.sh` packages Zen 2 binaries while build.sh's
+AppImage stays the portable one — the deliberate "the same build runs on the Steam Deck" property is
+kept, on the original path. Still open: the ≈4–5% below is still a desktop measurement, and the
+profile in `pgo/` is still desktop-trained (`BB_PGO=generate` on the Deck, a few minutes of play,
+rebuild).
+
+~~**Why.** There is no `-march`, `-mtune` or ISA level anywhere in `build.sh`, `gpu/CMakeLists.txt`,
 `shell.nix` or `packaging/` — deliberately, "the same build runs on the Steam Deck"
 (`docs/parallel_gpu.md`, "LTO and PGO"). PGO only engages when `pgo/*.gcda` exists
-(`build.sh:27-31`), so the shipped AppImage carries no profile. Measured in the same section:
+(`build.sh:27-31`), so the shipped AppImage carries no profile. Measured in the same section:~~
 
 | build | FPS | GPU thread µs/draw |
 |---|---|---|
@@ -136,21 +144,21 @@ equality across the stages; frame rate A/B in one run.
 | LTO | 74.4 | 7.58 (−1.8%) |
 | LTO + PGO | 76.3 | 7.35 (−4.8%) |
 
-**How.** A Deck package built with `-march=znver2 -mtune=znver2` (or `-march=x86-64-v3`, which the
+~~**How.** A Deck package built with `-march=znver2 -mtune=znver2` (or `-march=x86-64-v3`, which the
 Deck satisfies) plus a profile trained on the Deck (`BB_PGO=generate bash run.sh`, a few minutes of
 ordinary play, then the plain build). Either ship it as the Deck AppImage or keep a baseline package
-alongside it; a `x86-64-v3` baseline is safe for any CPU of that generation.
+alongside it; a `x86-64-v3` baseline is safe for any CPU of that generation.~~
 
-**Estimated impact:** ≈4–5%, *measured* — the table above is 73.2 → 76.3 FPS and −4.8% µs/draw for
+~~**Estimated impact:** ≈4–5%, *measured* — the table above is 73.2 → 76.3 FPS and −4.8% µs/draw for
 LTO+PGO, with LTO alone worth −1.8%. That measurement is a desktop build with no `-march` at all, so
 it is the floor rather than the total: the Deck adds AVX2 to the copy, hash and page-tracking loops
 that currently get baseline codegen, which is where the extra should show up. This is also the only
 item in the file whose gain arrives without touching rendering behaviour, which is why it is first
-in the suggested order.
+in the suggested order.~~
 
-**Verify.** The `Frame stats` field "GPU thread us/draw" tolerates scene differences better than FPS
+~~**Verify.** The `Frame stats` field "GPU thread us/draw" tolerates scene differences better than FPS
 (that is how the table above was made); alternate builds across restarts because run-to-run spread is
-±1.5 FPS.
+±1.5 FPS.~~
 
 ## 5. Guest copies off the GPU thread's critical path
 
@@ -311,8 +319,8 @@ time and compared by screenshot and frame rate"). Regressions to watch: the GPU-
 
 ## Suggested order
 
-1. **Item 4** — a few build lines, no rendering behaviour touched, measurable with the existing
-   µs/draw counter.
+1. ~~**Item 4** — a few build lines, no rendering behaviour touched, measurable with the existing
+   µs/draw counter.~~ **Done** (`build_steam_deck.sh`); the next measurement on a Deck confirms it.
 2. **Item 1** — the largest Deck-side GPU win, and independent of the CPU work.
 3. **Items 3 and 5** — both reduce what stage B and the GPU thread must do, without the large
    refactor of item 2.
