@@ -1,5 +1,7 @@
 # Crash fixes ported from BloodBorneButPc — status
 
+*Experimental* steam-deck specific (possibly other configs) optimizations live in nocrash-optimizations branch.
+
 This file is the handoff for the branch `awakechan-fixes`: what was ported, where the source of the
 fixes is, what was verified and on what, and what is left. It exists because the conversation in
 which the port was made cannot be exported — this can.
