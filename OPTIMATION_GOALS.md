@@ -13,6 +13,15 @@ them with `taskset -c 0-3,8-11` as a 4-core / 8-thread stand-in for the Deck —
 [ROADMAP.md](docs/ROADMAP.md) still lists Steam Deck validation of the AppImage as open. Treat the
 ordering as sound and the magnitudes as needing a Deck run.
 
+**How the estimates below are built, and how much to trust each.** Three kinds of number appear, and
+each is labelled where it is used. (a) *Measured* — the project's own A/Bs on the 7800 XT
+(`7.72 → 7.35 µs/draw`, `141 → 155 FPS`), the tightest kind. (b) *Share of a stage* — a bound taken
+from where the time sits inside one stage or thread (`buffer binding is ~12% of stage B`, `~9% + ~4%
+of the GPU thread`); that becomes an end-to-end percentage only if the same stage is what limits the
+frame. (c) *Extrapolation* — converting a desktop figure to the Deck, the weakest kind, always
+spelled out. Every figure is stated against a frame: 8.8 ms on the desktop card used for these
+measurements, 25–33 ms on the Deck at 720p.
+
 ## What the Deck changes
 
 - 4 cores / 8 threads, AVX2, no AVX-512 → the serial CPU chain is the hard constraint, not the
@@ -28,16 +37,16 @@ ordering as sound and the magnitudes as needing a Deck run.
 
 | # | Goal | Side | Expected impact | Effort | State |
 |---|---|---|---|---|---|
-| 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | Largest Deck GPU item | Medium | Open |
-| 2 | Parallel Vulkan recording (several command buffers) | CPU | Removes the serial cap at 4 cores | Large | Not started |
-| 3 | Move the buffer side of a draw from stage B to stage A | CPU | ~12% of stage B | Medium | Planned |
-| 4 | Deck-targeted build: `-march`/`-mtune` + PGO profile | CPU | ~5% (measured for LTO+PGO) | Small | Open |
-| 5 | Guest copies off the GPU thread's critical path | CPU | ~9% + ~4% of the GPU thread | Medium | Idea in docs |
-| 6 | Cheaper object motion vectors | CPU | ~10% | Medium | Open |
-| 7 | Scope `-fno-omit-frame-pointer` to the loader | CPU | Small | Small | Open |
-| 8 | Occlusion / predication done by the GPU | CPU | ~60 events/frame | Medium | Verify state first |
-| 9 | AOT shaders/pipelines + shipped pipeline cache | Both | Stutter, not average FPS | Small/Medium | Roadmap |
-| 10 | Deck-tune the streaming guards under a ~1 GB budget | Memory | Fewer area-load stalls | Small | Open |
+| 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | 0.5 ms of the 8.8 ms desktop frame (measured), ≈6% at most; ≈10–20% on the Deck, extrapolated | Medium | Open |
+| 2 | Parallel Vulkan recording (several command buffers) | CPU | Unmeasured ceiling — CPU was at 68% (545/800) at 4c/8t; ≈10–20% if half the idle capacity is recovered | Large | Not started |
+| 3 | Move the buffer side of a draw from stage B to stage A | CPU | ≤12% of stage B; ≈2–6% end-to-end | Medium | Planned |
+| 4 | Deck-targeted build: `-march`/`-mtune` + PGO profile | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | Open |
+| 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread (9% + 4%); ≈3–6% end-to-end | Medium | Idea in docs |
+| 6 | Cheaper object motion vectors | CPU | ≤10% measured with motion off; ≈3–6% recoverable | Medium | Open |
+| 7 | Scope `-fno-omit-frame-pointer` to the loader | CPU | ≈0–2%, usually under 1% | Small | Open |
+| 8 | Occlusion / predication done by the GPU | CPU + GPU | Unquantified: ~60 events/frame, plus whatever the GPU draws that it should be culling | Medium | Verify state first |
+| 9 | AOT shaders/pipelines + shipped pipeline cache | Both | ≈0 on average FPS; removes first-run and traversal hitches | Small/Medium | Roadmap |
+| 10 | Deck-tune the streaming guards under a ~1 GB budget | Memory | ≈0 steady-state; a few % during area loads | Small | Open |
 
 ## 1. Image-source copies for the guest `3d5ebf4e` memcpy
 
@@ -61,6 +70,16 @@ game profile (`gpu/games/bloodborne.cpp` knows only `buffer_copy_shader = 0xfefe
 read back only to be sampled later as R32F), instead of image → download → buffer → upload. Extend
 the game profile with the shader id if the shortcut keys off it.
 
+**Estimated impact:** ≈6% of the desktop frame at the very most — the profile charges `3d5ebf4e`
+0.5 ms of 8.8 ms and `parallel_gpu.md` says recognising image-source copies "would remove most of
+that". The Deck figure is an *extrapolation* in both directions: the same dispatches are
+memory-bound, so at roughly a seventh of the bandwidth they should be a materially larger share of a
+25–33 ms frame, best guess ≈10–20% — but the desktop measurement was taken where the GPU was already
+idle 2.1 ms of the frame ("GPU idle between submissions", 24%), i.e. CPU-bound, so a GPU-side saving
+partly hides there and should convert closer to one-for-one on the Deck, where 8 CUs and 720p make
+the GPU the limiter. Cheap to falsify: the label to watch is already in `BB_GPU_PROFILE`, and the
+question to answer first is whether the GPU busy time on Deck sits at the frame time.
+
 **Verify.** `BB_GPU_PROFILE=1` per-label GPU ms (the profile already labels recognises, fills,
 uploads and downloads); draw counts and `BB_FRAME_STATS` unchanged; screenshots. Bits in
 `BB_TOGGLE_FILE` for an in-run A/B as with the other GPU steps.
@@ -77,6 +96,13 @@ threads ~20% each. Further scaling "требует распараллелить 
 **How.** Several recording command buffers with barriers only at the seams, each owning its own
 stretch of packets. This is the item that lets the Deck use cores it currently cannot.
 
+**Estimated impact:** the least bounded number in this file, because nothing has been built. What
+*is* measured is the headroom: 545% of 800% used at 4c/8t, i.e. roughly a third of the machine
+idle while the frame is limited. If half of that idle capacity came back the gain would be on the
+order of 10–20%; if the chain only partly serialises, much less. Watch for the floor case —
+measurements here were taken at 209 FPS in patch mode, and at a 30 FPS target on the Deck the GPU
+may bind before the CPU does, in which case items 1 and 8 outrank this.
+
 **Verify.** The `Draw pipe` line in `BB_FRAME_STATS` (stage A waiting, stage B busy); the same
 `taskset -c 0-3,8-11` protocol the earlier A/Bs used; screenshots per phase.
 
@@ -88,6 +114,11 @@ handing a seventh of its work to the under-used stage is the best ratio availabl
 
 **How.** Stage A owns the buffer cache and hands its commands to stage B, as the constant ring
 already does for small read-only buffers (`vk_constant_ring.h`).
+
+**Estimated impact:** ≤12% of stage B, *share of a stage*, with `ObtainBuffer` ~11% of it the bulk.
+End-to-end that is roughly 2–6%: stage B is the limiting stage so its busy time is close to the
+frame in the CPU-bound case, but the seam between the stages needs a barrier and stage A is not
+free — the doc's "waits most of the time" means it has room, not that the transfer is costless.
 
 **Verify.** Stage A/stage B busy split in `BB_FRAME_STATS`; `BB_PIPE_VERIFY=N` for register-file
 equality across the stages; frame rate A/B in one run.
@@ -110,6 +141,13 @@ Deck satisfies) plus a profile trained on the Deck (`BB_PGO=generate bash run.sh
 ordinary play, then the plain build). Either ship it as the Deck AppImage or keep a baseline package
 alongside it; a `x86-64-v3` baseline is safe for any CPU of that generation.
 
+**Estimated impact:** ≈4–5%, *measured* — the table above is 73.2 → 76.3 FPS and −4.8% µs/draw for
+LTO+PGO, with LTO alone worth −1.8%. That measurement is a desktop build with no `-march` at all, so
+it is the floor rather than the total: the Deck adds AVX2 to the copy, hash and page-tracking loops
+that currently get baseline codegen, which is where the extra should show up. This is also the only
+item in the file whose gain arrives without touching rendering behaviour, which is why it is first
+in the suggested order.
+
 **Verify.** The `Frame stats` field "GPU thread us/draw" tolerates scene differences better than FPS
 (that is how the table above was made); alternate builds across restarts because run-to-run spread is
 ±1.5 FPS.
@@ -126,6 +164,12 @@ with spare capacity.
 copying onto the GPU thread instead (86.5 vs 87.2 FPS) and was reverted — the queue must be drained
 somewhere that does not compete with the GPU thread.
 
+**Estimated impact:** ≤13% of the GPU thread's time, *share of a stage* (9% `WaitHostCopies` + 4%
+`WaitAsync`) — but a ceiling, not a forecast. The GPU thread must not be the last stage for the full
+13% to reach the frame, and the failed attempt is the warning that matters: moving the same work to
+the idle *recording* thread made things slightly worse (86.5 vs 87.2 FPS). Realistically 3–6% if the
+queue is drained by the four `SCHED_IDLE` workers that genuinely have spare capacity.
+
 **Verify.** The blocked-share fields in `BB_FRAME_STATS`; copy stats (`BB_CE_STATS`/copy counters);
 frame rate and screenshots.
 
@@ -138,6 +182,13 @@ temporal upscaling, so it is not a quality knob to drop — but on 4 cores 10% i
 **How.** Reuse the previous frame's motion for draws whose pose buffer is unchanged (the pose hash
 and `Motion::IndexRangeCache` already exist), or compute the vectors on the GPU.
 
+**Estimated impact:** 10% is the *measured* ceiling (155 vs 141 FPS with `object_motion=0`) and it
+is a ceiling, not a target — motion vectors are required for temporal upscaling, so this is strictly
+about making them cheaper. The time being attacked is ~0.28 µs per packet of stage B on the
+bone-palette hash, index-range cache and motion pipeline variants; recovering part of that for the
+draws whose pose is unchanged lands in the 3–6% range, with the rest of the distance back to 10%
+only reachable by moving the work to the GPU.
+
 **Verify.** `BB_DEBUG_MOTION`, the motion vector test targets
 (`motion-history-test`, `motion-shader-test`), and frame rate A/B.
 
@@ -148,6 +199,11 @@ thread dumps and the watchdog. On a CPU-bound workload it costs a little on ever
 
 **How.** Build `bb-probe`/`shim` with frame pointers, the hot GPU library without — or make it an
 option. **Verify:** the loader's thread dump tests still walk stacks; the µs/draw field.
+
+**Estimated impact:** ≈0–2%, in practice usually under 1% — on x86-64 with the register pressure of
+these loops, keeping a frame pointer is close to free, and on a workload that is memory-bound part
+of the time it can be free outright. This is the smallest item in the file; fold it into another
+change rather than measuring it on its own.
 
 ## 8. Occlusion and predication done by the GPU
 
@@ -161,12 +217,30 @@ Vulkan-query path flashing the lamp glow grey with the upscaler.
 `BB_OCCLUSION_TRACE=1`), then make the counter stable enough to default on, and implement
 predication. **Verify:** `BB_PM4_SELFTEST=1` (occlusion interval checks), read traces, frame rate.
 
+**Estimated impact:** unquantified, and it genuinely cuts both ways — which is why the state has to
+be established first rather than assumed. If the game is currently issuing draws that real hardware
+would have culled, occluding them properly could remove a large slice of GPU work, and on 8 CUs that
+would make it the biggest win in this file. If the counters are already cheap and nothing is
+mis-culled, the gain is ~60 events per frame of CPU and effectively zero. Against that, the one
+time the real-query path was tried it broke the lamp glow's colour under the upscaler
+(`EMULATION_REMOVAL_PLAN.ru.md`), so the cost of getting it wrong is a visual regression, not just
+a slider. Note that "Measure before optimising" already books it on the GPU side; that is a working
+assumption from the culling argument above, not a finding, and the same section's decision rule is
+what should settle it.
+
 ## 9. AOT shaders/pipelines, and ship the pipeline cache
 
 **Why.** Roadmap item: "Shaders translated ahead of time, at install, not during play".
 `vk_pipeline_serialization.cpp` and `BB_ASYNC_PIPELINES` already exist and `run.sh:31` raises
 `MESA_SHADER_CACHE_MAX_SIZE=4G`; what is missing is compiling during install and shipping the result
 in the AppImage. This attacks hitches and first-run stutter (frame time), not average FPS.
+
+**Estimated impact:** ≈0 on average FPS — by design, since this removes *compilation* from the
+play session and not work from the frame. What moves is frame time: the first-run cost to reach the
+title screen, and the hitch spikes during traversal and area loads. On the Deck the perceived gain
+is larger than the number suggests, because a 4-core CPU has no spare headroom to absorb a compile
+in the middle of streaming, so the stutter is what a player notices most. Measure this one in
+stall lines and seconds-to-title, not in FPS.
 
 **Verify.** First-run time to the title screen and the stall lines in `BB_FRAME_STATS`.
 
@@ -182,6 +256,14 @@ integrated GPUs — the Deck is exactly that case.
 **How.** A/B those defaults on a small driver budget (`BB_GC_BUDGET_MB` reproduces a Deck-sized
 budget on a desktop GPU). Guards that keep images alive longer trade memory for fewer re-uploads;
 the right point is different at ~1 GB than at 16 GB.
+
+**Estimated impact:** ≈0% on steady-state FPS, and a few percent at most during traversal, where it
+acts on the 40–50 ms area-load frames and not on the 25–33 ms ordinary ones. The guards trade
+residency for fewer re-uploads (keeping images alive longer costs memory, which is the scarce
+resource here), so the payoff is fewer or milder spikes rather than a higher average — and it is
+bounded by the composition of those frames: ~30 ms of stage-B draw work and ~12 ms of copies, most
+of which items 2, 3 and 5 are the actual fix for. Do this after them, and only if the pressure
+report still shows re-upload thrash.
 
 **Verify.** The pressure report in `BB_FRAME_STATS` (including the count of images kept as in use),
 stall lines, and VRAM as reported by `VK_EXT_memory_budget`.
