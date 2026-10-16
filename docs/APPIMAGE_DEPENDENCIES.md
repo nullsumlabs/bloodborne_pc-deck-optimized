@@ -15,7 +15,7 @@ requirements; everything below is about the Ubuntu AppDir one.
 
 | Path | What it is |
 |---|---|
-| `AppRun` | 820 KB static x86-64 stub built on Ubuntu 24.04 (GCC 13.3.0): the port's entry program, but a variant that resolves its target at run time — `$APPDIR`, else the directory of `/proc/self/exe` — then runs `<appdir>/usr/share/bbport/bbport` |
+| `AppRun` | 820 KB static x86-64 stub (Ubuntu 24.04, GCC 13.3.0): `packaging/bbport-apprun.c`, the port's entry program with its target resolved at run time — `$APPDIR`, else the directory of `/proc/self/exe` — then `<appdir>/usr/share/bbport/bbport` |
 | `bbport.desktop`, `bbport.png`, `.DirIcon` | AppStream entry (`Exec=bbport`, `X-AppImage-Version=0.51`) |
 | `usr/share/bbport/` | the port: `bbport` wrapper (2.25 KB), `run.sh`, `bin/`, `launcher/`, `scripts/`, `patches/`, `tools/` |
 | `usr/bin/` | `python3` → `python3.12` (8.0 MB) |
@@ -31,18 +31,18 @@ requirements; everything below is about the Ubuntu AppDir one.
 | `packaging/bbport-wrapper.sh` | the package's `usr/share/bbport/bbport`, byte for byte |
 | `packaging/appimage-libs.txt` | the 148 library names of `usr/lib/x86_64-linux-gnu`, as extracted |
 | `packaging/bbport.desktop` | the AppStream entry (`Exec=bbport`, `X-AppImage-Version=0.51`) |
+| `packaging/bbport.png` | the icon (and `.DirIcon`), committed with `git add -f`: `*.png` is ignored here for screenshots, and this one is a build input |
+| `packaging/appimage-ubuntu.sh` | the recipe: assembles this AppDir out of the host's `/usr` and packages it with `appimagetool` |
+| `packaging/bbport-apprun.c` | the `AppRun` it compiles — `bbport-entry.c` is the nix package's equivalent |
 
-The icon (`bbport.png`, 622 bytes, byte-identical to `.DirIcon`) is **not** committed: `*.png` is
-ignored in this repository. It is in the reference AppImage
-(`7z e dist/…AppImage bbport.png`), or `appimagetool` can be given it as `--icon`.
-
-**No AppDir recipe exists in this repository.** Checked on every ref — `master`, `awakechan-fixes`,
-`nocrash-optimizations`, `origin/*`, the `0.x` tags — for `AppDir` and `appimagetool`: nothing. What
-looks like one, `packaging/appimage.sh`, builds the *nix* package with `nix-appimage`; the difference
-between the two is the table near the end of this document. Assembling this AppDir means the port's
-files from `build.sh` (or `build_steam_deck.sh`), a distro Python 3.12, the libraries in
-`appimage-libs.txt`, the host's typelibs, GdkPixbuf loaders, GTK4 modules, icon themes and fonts, the
-`AppRun` variant described below, and `appimagetool`.
+**The recipe is `packaging/appimage-ubuntu.sh`.**
+`bash build_steam_deck.sh && bash packaging/appimage-ubuntu.sh` builds and packages; `--check` lists
+what a host is missing first, and `BB_HOST_USR`, `BB_APPDIR`, `BB_APPIMAGE_OUT` and `BB_FORCE`
+override the host root, the scratch directory, the output path and the refusal to overwrite an
+existing file. It takes the port's files from `out/`, the wrapper, desktop entry and icon from
+`packaging/`, a distro Python 3.12 plus the libraries of `appimage-libs.txt` from the host's `/usr`,
+and compiles the entry point. `packaging/appimage.sh` remains the *nix* package — the table at the
+end of this document is the difference between the two.
 
 ## The port's own files (these come from `build.sh` / `build_steam_deck.sh`)
 
@@ -64,12 +64,14 @@ overlay and fossilize layers — then runs the wrapper. Steam starts every non-S
 overlay preloaded and inside this package's glibc it cannot find its own `libGL.so.1`, hence the
 workaround.
 
-**It is not the repository's copy of that file.** The committed `packaging/bbport-entry.c` takes an
-absolute `TARGET` at compile time — that is what `packaging/default.nix` builds for the nix package —
-while this `AppRun` resolves the package directory at run time (`$APPDIR`, else the directory of
-`/proc/self/exe`) and forms `"%s/usr/share/bbport/bbport"`; its literals are that set, `APPDIR`,
-`bbport: /proc/self/exe` and `bbport: exec`. No ref in this repository carries that variant, so it
-came from a modified copy that was never committed.
+**Its counterpart in this repository is `packaging/bbport-apprun.c`, not `bbport-entry.c`.** The nix
+package compiles the latter with an absolute `TARGET` known at build time; an AppImage is mounted
+wherever its runtime chooses, so `bbport-apprun.c` resolves the package directory at run time
+(`$APPDIR`, else the directory of `/proc/self/exe`) and forms `"%s" TARGET_SUFFIX`. Every literal of
+the artifact's `AppRun` is in it — the same ten variable names, `BB_HOST_%s`, both
+`DISABLE_VK_LAYER_VALVE_*` names, `APPDIR`, `bbport: /proc/self/exe` and
+`%s/usr/share/bbport/bbport` — so the two behave alike, though the artifact's own binary is not
+byte-identical to anything built here: it came from a copy of that program that was never committed.
 
 The wrapper is now versioned: `packaging/bbport-wrapper.sh` is the package's
 `usr/share/bbport/bbport` byte for byte (`cmp`; the extracted tree's permissions are not
@@ -132,7 +134,7 @@ Full list, as extracted, in [the appendix](#appendix-the-full-library-list).
 | Runtime | 148 distro libraries + a distro Python 3.12 | the package's own Nix closure |
 | glibc | host, ≥ 2.38 needed | package's own |
 | Size | 139 MiB compressed | 399 MB (per `docs/CHANGES_0.51.md`) |
-| Built by | not in this repository | `bash packaging/appimage.sh` (`nix bundle`, `nix-appimage`) |
+| Built by | `bash packaging/appimage-ubuntu.sh` (AppDir + `appimagetool`) | `bash packaging/appimage.sh` (`nix bundle`, `nix-appimage`) |
 
 ## Appendix: the full library list
 
@@ -296,16 +298,22 @@ shipped with `@APPDIR@` placeholders.
 ## How this was read, and what is not verified
 
 Read from the artifact on a macOS host: `7z l -slt` for the manifest, `7z x` to unpack the SquashFS,
-then `ls`, `file`, `diff` (against this repository's `run.sh`) and `strings` for the GLIBC symbol
-versions and the AppRun identity. Nothing was built or run: the claim that it works is the hours of
-play reported by the person who built it, not a test performed here.
+then `ls`, `file`, `diff` (against this repository's `run.sh`), `cmp` and `grep -a` for the GLIBC
+symbol versions and the `AppRun` literals. Nothing was built or run: the claim that it works is the
+hours of play reported by the person who built it, not a test performed here.
 
-Open, and needed to rebuild it:
+Open:
 
-- **The AppDir build script is not in this repository.** Its outputs are all that is here, so how the
-  151 libraries were chosen (a `linuxdeploy`/`ldd` walk over the launcher's and the port's
-  dependencies, versus a hand-written list) is unknown, and the wrapper script
-  (`usr/share/bbport/bbport`) exists only inside the AppImage.
+- **The artifact's `AppRun` is its own binary**, built from a copy of the entry program that no ref
+  carries. `packaging/bbport-apprun.c` is written to behave like it — its literals match one for one
+  — but the bytes are not the artifact's.
+- **`packaging/appimage-ubuntu.sh` has not been run end to end.** It was exercised against a stubbed
+  host and toolchain: `--check` writes nothing, a missing piece is named and the build stops, the
+  output file is never overwritten without `BB_FORCE=1`, and the AppDir it produced carried the
+  reference's 2739 paths, name for name. No AppImage has been built or started with it, and the
+  `gdk-pixbuf-query-loaders` step has only ever run against a stub.
+- **The `AppRun` does not tell us how the 148 libraries were chosen** — the list here is what the
+  package contains, and the recipe reproduces it by name.
 - **These binaries are the portable build**, not a Zen 2 one: the artifact predates
   `build_steam_deck.sh`, so no `-march` item has been measured yet. Rebuilding it through
   `bash build_steam_deck.sh` and the same AppDir step is what would produce the Deck-targeted
