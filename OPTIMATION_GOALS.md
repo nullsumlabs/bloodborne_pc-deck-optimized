@@ -5,8 +5,8 @@ downgrades). Compiled 2026-10-15 from this project's own measurements and design
 [parallel_gpu.md](docs/parallel_gpu.md), [CHANGES_2026-10-03.md](docs/CHANGES_2026-10-03.md),
 [EMULATION_REMOVAL_PLAN.ru.md](docs/EMULATION_REMOVAL_PLAN.ru.md),
 [TRANSLATION_GPU_COPY_LABELS.ru.md](docs/TRANSLATION_GPU_COPY_LABELS.ru.md),
-[VULKAN_SHADERS.md](docs/VULKAN_SHADERS.md), [SHADPS4_DEPENDENCIES.md](docs/SHADPS4_DEPENDENCIES.md)
-and the source itself.
+[VULKAN_SHADERS.md](docs/VULKAN_SHADERS.md), [SHADPS4_DEPENDENCIES.md](docs/SHADPS4_DEPENDENCIES.md),
+[APPIMAGE_DEPENDENCIES.md](docs/APPIMAGE_DEPENDENCIES.md) and the source itself.
 
 **Standing caveat on every number below.** They were measured on an RX 7800 XT / RADV, several of
 them with `taskset -c 0-3,8-11` as a 4-core / 8-thread stand-in for the Deck — not on Deck hardware.
@@ -126,12 +126,11 @@ equality across the stages; frame rate A/B in one run.
 ## 4. ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~
 
 **Done** — `build_steam_deck.sh` (commit `622e59d`): build.sh plus `-march=znver2 -mtune=znver2` on
-every compiler invocation and on CMake's `CMAKE_C(XX)_FLAGS` (so the subprojects get it too), meaning
-`bash build_steam_deck.sh && bash packaging/appimage.sh` packages Zen 2 binaries while build.sh's
-AppImage stays the portable one — the deliberate "the same build runs on the Steam Deck" property is
-kept, on the original path. Still open: the ≈4–5% below is still a desktop measurement, and the
-profile in `pgo/` is still desktop-trained (`BB_PGO=generate` on the Deck, a few minutes of play,
-rebuild).
+every compiler invocation and on CMake's `CMAKE_C(XX)_FLAGS` (so the subprojects get it too). Still
+open: the ≈4–5% below is a desktop measurement, the profile in `pgo/` is still desktop-trained
+(`BB_PGO=generate` on the Deck, a few minutes of play, rebuild), and the AppImage that has been
+played for hours is the *portable* one — it predates this script. What that package carries and what
+the host must supply is now recorded in [APPIMAGE_DEPENDENCIES.md](docs/APPIMAGE_DEPENDENCIES.md).
 
 ~~**Why.** There is no `-march`, `-mtune` or ISA level anywhere in `build.sh`, `gpu/CMakeLists.txt`,
 `shell.nix` or `packaging/` — deliberately, "the same build runs on the Steam Deck"
