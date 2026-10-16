@@ -40,6 +40,20 @@ long session, and the larger game-memory pool for a scene above 1080p. Verified 
 loader/runtime test suite, the scheduler block logic under ASan/UBSan, and the edited runtime files'
 syntax. Next goals are finding optimizations that can be somewhat easily implemented and for the Steam Deck specifically.
 
+## Steam Deck build
+
+```bash
+bash build_steam_deck.sh          # build.sh with -march=znver2 -mtune=znver2 (Van Gogh, Zen 2)
+bash packaging/appimage-ubuntu.sh # -> dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage
+```
+
+The flags reach every compiler call and both CMake configurations. `build.sh` and its AppImage stay
+the portable ones; `BB_DECK_MARCH=x86-64-v3` gives the Deck build a portable ISA instead. Package on
+Ubuntu 24.04: the recipe takes the 148 libraries of `packaging/appimage-libs.txt` from the host, and
+`--check` lists what that host is missing before copying anything (`packaging/appimage.sh` is the
+nix package instead). The `znver2` AppImage is Deck-only, and needs the host's glibc 2.38
+(SteamOS 3.6), Vulkan and MangoHud.
+
 
 -----------------
 
@@ -324,8 +338,9 @@ GPU has FP8 matrices (`VK_EXT_shader_float8`); the log says `Upscaler: FSR 4.1.1
 emulation of FP8 (`BB_FSR4CAP_FP8=1` records it there too, `fp8emu/`): bit-exact with the DLL;
 **not yet run on RDNA4 hardware.**
 
-**AppImage** (Steam Deck): `bash build.sh && bash packaging/appimage.sh` →
-`dist/Bloodborne-bbport-x86_64.AppImage`; data in `~/.local/share/bbport`, `--play` starts the
+**AppImage**: `bash build.sh && bash packaging/appimage.sh` →
+`dist/Bloodborne-bbport-x86_64.AppImage` (nix: Mesa's Vulkan drivers and MangoHud inside; the Zen 2
+package is [above](#steam-deck-build)); data in `~/.local/share/bbport`, `--play` starts the
 game without the launcher window (Game Mode). FSR 4.1.1 models are not packaged: build them with
 the launcher's button (see above); they go to `~/.local/share/bbport/fsr4_411`
 (`BB_PACKAGE_FSR411=1` bundles a local `fsr4_411` into an AppImage for your own devices). On the Steam Deck pick the 1280×720 output (the
