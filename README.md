@@ -3,7 +3,7 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 # bbport — a native Linux port of Bloodborne
 
-**New in this branch:** [crash fixes](#crash-fixes) ported from BloodBorneButPc — crashes that no longer end the game.
+*New in this "nocrash" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
 
 **English** · [Русский](README.ru.md)
 
