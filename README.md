@@ -41,6 +41,20 @@ loader/runtime test suite, the scheduler block logic under ASan/UBSan, and the e
 syntax — but **the GPU tree itself has not been built** (the port was written on macOS); it needs a
 Linux build.
 
+## Steam Deck build
+
+```bash
+bash build_steam_deck.sh          # build.sh with -march=znver2 -mtune=znver2 (Van Gogh, Zen 2)
+bash packaging/appimage-ubuntu.sh # -> dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage
+```
+
+The flags reach every compiler call and both CMake configurations. `build.sh` and its AppImage stay
+the portable ones; `BB_DECK_MARCH=x86-64-v3` gives the Deck build a portable ISA instead. Package on
+Ubuntu 24.04: the recipe takes the 148 libraries of `packaging/appimage-libs.txt` from the host, and
+`--check` lists what that host is missing before copying anything (`packaging/appimage.sh` is the
+nix package instead). The `znver2` AppImage is Deck-only, and needs the host's glibc 2.38
+(SteamOS 3.6), Vulkan and MangoHud.
+
 
 -----------------
 
