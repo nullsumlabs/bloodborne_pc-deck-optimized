@@ -58,7 +58,7 @@ host_library() {
 }
 
 verify() {
-    local name tool found
+    local name found
     echo "Checking what this recipe needs:" >&2
     # The repository's own pieces: the port's files and the package's wrapper, entry and menu entry.
     want "$libs"; want "$wrapper"; want "$desktop"; want "$icon"
@@ -74,7 +74,10 @@ verify() {
     # The launcher's toolkit.
     for name in $typelibs; do want "$host_lib/girepository-1.0/$name.typelib"; done
     want "$host_lib/gdk-pixbuf-2.0/2.10.0/loaders"
-    want "$(query_loaders)"
+    if [[ -z $(query_loaders) ]]; then
+        printf '  missing: gdk-pixbuf-query-loaders (in libgdk-pixbuf-2.0-0, or in PATH)\n' >&2
+        missing=$((missing + 1))
+    fi
     want "$host_lib/gtk-4.0/4.0.0"
     want "$host_usr/share/glib-2.0/schemas/gschemas.compiled"
     want "$host_usr/share/fonts/truetype/dejavu"
@@ -91,7 +94,7 @@ verify() {
     done < "$libs"
     want "$(command -v gcc || echo /usr/bin/gcc)"
     if [[ -z $(appimagetool_path) ]]; then
-        printf '  missing: appimagetool (in PATH, or $BB_APPIMAGETOOL)\n' >&2
+        printf '  missing: appimagetool (in PATH, or named by BB_APPIMAGETOOL)\n' >&2
         missing=$((missing + 1))
     fi
     if (( missing )); then
@@ -108,7 +111,7 @@ query_loaders() {
                      "$host_usr/bin/gdk-pixbuf-query-loaders"; do
         [[ -x $candidate ]] && { echo "$candidate"; return; }
     done
-    command -v gdk-pixbuf-query-loaders 2>/dev/null || echo /nonexistent
+    command -v gdk-pixbuf-query-loaders 2>/dev/null || true
 }
 
 appimagetool_path() {
