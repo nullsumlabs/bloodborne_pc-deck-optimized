@@ -339,8 +339,9 @@ GPU has FP8 matrices (`VK_EXT_shader_float8`); the log says `Upscaler: FSR 4.1.1
 emulation of FP8 (`BB_FSR4CAP_FP8=1` records it there too, `fp8emu/`): bit-exact with the DLL;
 **not yet run on RDNA4 hardware.**
 
-**AppImage** (Steam Deck): `bash build.sh && bash packaging/appimage.sh` →
-`dist/Bloodborne-bbport-x86_64.AppImage`; data in `~/.local/share/bbport`, `--play` starts the
+**AppImage**: `bash build.sh && bash packaging/appimage.sh` →
+`dist/Bloodborne-bbport-x86_64.AppImage` (nix: Mesa's Vulkan drivers and MangoHud inside; the Zen 2
+package is [above](#steam-deck-build)); data in `~/.local/share/bbport`, `--play` starts the
 game without the launcher window (Game Mode). FSR 4.1.1 models are not packaged: build them with
 the launcher's button (see above); they go to `~/.local/share/bbport/fsr4_411`
 (`BB_PACKAGE_FSR411=1` bundles a local `fsr4_411` into an AppImage for your own devices). On the Steam Deck pick the 1280×720 output (the

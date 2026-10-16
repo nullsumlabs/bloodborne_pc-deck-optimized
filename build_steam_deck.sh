@@ -5,8 +5,8 @@
 # runs. Everything else (PGO, LTO, the GPU library, the online module, --test) behaves as in
 # build.sh; the two scripts share out/, so the packaged flow is:
 #
-#     bash build_steam_deck.sh && bash packaging/appimage.sh
-#     # -> dist/Bloodborne-bbport-x86_64.AppImage, Deck-only binaries
+#     bash build_steam_deck.sh && bash packaging/appimage-ubuntu.sh
+#     # -> dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage, Deck-only binaries
 #
 # Keep build.sh's AppImage as the portable one: -march=znver2 enables instructions only AMD
 # implements (clzero, wbnoinvd, SSE4A), so these binaries do not run on Intel or on pre-Zen CPUs.
