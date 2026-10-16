@@ -15,7 +15,7 @@ requirements; everything below is about the Ubuntu AppDir one.
 
 | Path | What it is |
 |---|---|
-| `AppRun` | `packaging/bbport-entry.c`, compiled static with `TARGET=$APPDIR/usr/share/bbport/bbport` |
+| `AppRun` | 820 KB static x86-64 stub built on Ubuntu 24.04 (GCC 13.3.0): the port's entry program, but a variant that resolves its target at run time — `$APPDIR`, else the directory of `/proc/self/exe` — then runs `<appdir>/usr/share/bbport/bbport` |
 | `bbport.desktop`, `bbport.png`, `.DirIcon` | AppStream entry (`Exec=bbport`, `X-AppImage-Version=0.51`) |
 | `usr/share/bbport/` | the port: `bbport` wrapper (2.25 KB), `run.sh`, `bin/`, `launcher/`, `scripts/`, `patches/`, `tools/` |
 | `usr/bin/` | `python3` → `python3.12` (8.0 MB) |
@@ -23,6 +23,26 @@ requirements; everything below is about the Ubuntu AppDir one.
 | `usr/lib/python3/dist-packages/` | `gi` (PyGObject) |
 | `usr/lib/x86_64-linux-gnu/` | 148 shared libraries (189 MB) + `girepository-1.0/`, `gtk-4.0/`, `gdk-pixbuf-2.0/` |
 | `usr/share/` | `bbport/`, `fonts/` (9 files, 4 MB), `icons/` (830 files, 14 MB), `glib-2.0/schemas/` |
+
+## What this repository holds for this package
+
+| Path | What it is |
+|---|---|
+| `packaging/bbport-wrapper.sh` | the package's `usr/share/bbport/bbport`, byte for byte |
+| `packaging/appimage-libs.txt` | the 148 library names of `usr/lib/x86_64-linux-gnu`, as extracted |
+| `packaging/bbport.desktop` | the AppStream entry (`Exec=bbport`, `X-AppImage-Version=0.51`) |
+
+The icon (`bbport.png`, 622 bytes, byte-identical to `.DirIcon`) is **not** committed: `*.png` is
+ignored in this repository. It is in the reference AppImage
+(`7z e dist/…AppImage bbport.png`), or `appimagetool` can be given it as `--icon`.
+
+**No AppDir recipe exists in this repository.** Checked on every ref — `master`, `awakechan-fixes`,
+`nocrash-optimizations`, `origin/*`, the `0.x` tags — for `AppDir` and `appimagetool`: nothing. What
+looks like one, `packaging/appimage.sh`, builds the *nix* package with `nix-appimage`; the difference
+between the two is the table near the end of this document. Assembling this AppDir means the port's
+files from `build.sh` (or `build_steam_deck.sh`), a distro Python 3.12, the libraries in
+`appimage-libs.txt`, the host's typelibs, GdkPixbuf loaders, GTK4 modules, icon themes and fonts, the
+`AppRun` variant described below, and `appimagetool`.
 
 ## The port's own files (these come from `build.sh` / `build_steam_deck.sh`)
 
@@ -37,15 +57,24 @@ requirements; everything below is about the Ubuntu AppDir one.
 
 ## How it is wired
 
-`AppRun` (`packaging/bbport-entry.c`) drops the host's library injection — `LD_PRELOAD`,
+`AppRun` does what `packaging/bbport-entry.c` does — drops the host's library injection (`LD_PRELOAD`,
 `LD_LIBRARY_PATH`, `LD_AUDIT`, `GTK_PATH`, `GTK_MODULES`, `GTK_EXE_PREFIX`, `GIO_EXTRA_MODULES`,
-`GDK_PIXBUF_MODULEDIR`, `PYTHONHOME`, `PYTHONPATH` — saving each as `BB_HOST_*`, then disables Steam's
-overlay and fossilize layers and `execv`s `usr/share/bbport/bbport` (Steam starts every non-Steam game
-with the overlay preloaded; inside this package's glibc it cannot find its own `libGL.so.1`).
+`GDK_PIXBUF_MODULEDIR`, `PYTHONHOME`, `PYTHONPATH`, each saved as `BB_HOST_*`), disables Steam's
+overlay and fossilize layers — then runs the wrapper. Steam starts every non-Steam game with the
+overlay preloaded and inside this package's glibc it cannot find its own `libGL.so.1`, hence the
+workaround.
 
-The wrapper at `usr/share/bbport/bbport` is **not in this repository** — it exists only inside the
-built AppImage. It is a self-locating bash script (`appdir=${APPDIR:-$(cd "$(dirname "$0")/../../..")}`)
-that sets:
+**It is not the repository's copy of that file.** The committed `packaging/bbport-entry.c` takes an
+absolute `TARGET` at compile time — that is what `packaging/default.nix` builds for the nix package —
+while this `AppRun` resolves the package directory at run time (`$APPDIR`, else the directory of
+`/proc/self/exe`) and forms `"%s/usr/share/bbport/bbport"`; its literals are that set, `APPDIR`,
+`bbport: /proc/self/exe` and `bbport: exec`. No ref in this repository carries that variant, so it
+came from a modified copy that was never committed.
+
+The wrapper is now versioned: `packaging/bbport-wrapper.sh` is the package's
+`usr/share/bbport/bbport` byte for byte (`cmp`; the extracted tree's permissions are not
+informative — 7z drops them). It is a self-locating bash script
+(`appdir=${APPDIR:-$(cd -- "$(dirname -- "$0")/../../.." && pwd)}`) that sets:
 
 | Variable | Value |
 |---|---|
