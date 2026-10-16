@@ -95,6 +95,10 @@ Inside the native tree, the port's own edits are visible as **407 `bbport:` mark
 files** and **267 distinct `BB_*` switches** across the tree — a good proxy for how much
 behaviour is still toggle-reachable legacy rather than compiled in.
 
+The individual dependencies behind these numbers — what is compiled, what the renderer still calls
+through shadPS4's configuration surface, and what merely has to match shadPS4 conventions — are
+listed in [SHADPS4_DEPENDENCIES.md](SHADPS4_DEPENDENCIES.md).
+
 ## 3. Remaining bottleneck files (heavy emulation / wrappers)
 
 In rough order of cost, per the port's own plan:
