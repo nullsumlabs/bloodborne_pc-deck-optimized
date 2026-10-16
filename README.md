@@ -5,6 +5,8 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 *New in this "nocrash" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
 
+*Experimental* steam-deck specific (possibly other configs) optimizations live in nocrash-optimizations branch.
+
 ## Crash fixes
 
 This branch (`awakechan-fixes`) ports the crash fixes of the Windows fork
