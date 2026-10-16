@@ -3,35 +3,7 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 # bbport — a native Linux port of Bloodborne
 
-**New in this branch:** [crash fixes](#crash-fixes) ported from BloodBorneButPc — crashes that no longer end the game.
-
-**English** · [Русский](README.ru.md)
-
-bbport is the counterpart of Wine + DXVK for a single game: *Bloodborne* for PlayStation 4
-(CUSA03173, game version 1.09) on an x86-64 Linux PC. The game's original executable runs
-directly on the PC:
-
-- **as in Wine**, the game's x86-64 code runs on the CPU directly, and a runtime written for
-  this one game replaces the PS4 system libraries;
-- **as in DXVK**, the game's graphics are translated to Vulkan — by a renderer derived from
-  [shadPS4](https://github.com/shadps4-emu/shadPS4) and heavily extended for this game, including
-  temporal upscaling with AMD FSR 3.1, FSR 4 and FSR 4.1.1;
-- memory and the GPU's work follow the PC model on AMD GPUs by default (the new memory and
-  translation model); NVIDIA and other GPUs keep the old memory model of 0.3 for now. The
-  launcher's *Memory model* switches either way.
-
-One step remains to the full Wine + DXVK model: the new model on NVIDIA as well, then removing the
-old memory model (see below).
-
-> **No game files are included.** You need your own dump of Bloodborne with update 1.09: any retail
-> release (CUSA00900 in the US, CUSA03173 for the European Game of the Year edition, ...), as they
-> share the same executable.
-> This project is not affiliated with Sony Interactive Entertainment, FromSoftware or AMD.
-
-**Status: experimental, playable.** The game boots, loads saves and plays (the Hunter's Dream
-and several areas of Yharnam were played with it) with sound, gamepad and saving.
-A full play-through has not been verified, and only one machine (Linux, AMD Radeon RX 7800 XT,
-Mesa/RADV) has been tested thoroughly.
+*New in this "nocrash" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
 
 ## Crash fixes
 
@@ -68,6 +40,39 @@ long session, and the larger game-memory pool for a scene above 1080p. Verified 
 loader/runtime test suite, the scheduler block logic under ASan/UBSan, and the edited runtime files'
 syntax — but **the GPU tree itself has not been built** (the port was written on macOS); it needs a
 Linux build.
+
+
+-----------------
+
+
+
+**English** · [Русский](README.ru.md)
+
+bbport is the counterpart of Wine + DXVK for a single game: *Bloodborne* for PlayStation 4
+(CUSA03173, game version 1.09) on an x86-64 Linux PC. The game's original executable runs
+directly on the PC:
+
+- **as in Wine**, the game's x86-64 code runs on the CPU directly, and a runtime written for
+  this one game replaces the PS4 system libraries;
+- **as in DXVK**, the game's graphics are translated to Vulkan — by a renderer derived from
+  [shadPS4](https://github.com/shadps4-emu/shadPS4) and heavily extended for this game, including
+  temporal upscaling with AMD FSR 3.1, FSR 4 and FSR 4.1.1;
+- memory and the GPU's work follow the PC model on AMD GPUs by default (the new memory and
+  translation model); NVIDIA and other GPUs keep the old memory model of 0.3 for now. The
+  launcher's *Memory model* switches either way.
+
+One step remains to the full Wine + DXVK model: the new model on NVIDIA as well, then removing the
+old memory model (see below).
+
+> **No game files are included.** You need your own dump of Bloodborne with update 1.09: any retail
+> release (CUSA00900 in the US, CUSA03173 for the European Game of the Year edition, ...), as they
+> share the same executable.
+> This project is not affiliated with Sony Interactive Entertainment, FromSoftware or AMD.
+
+**Status: experimental, playable.** The game boots, loads saves and plays (the Hunter's Dream
+and several areas of Yharnam were played with it) with sound, gamepad and saving.
+A full play-through has not been verified, and only one machine (Linux, AMD Radeon RX 7800 XT,
+Mesa/RADV) has been tested thoroughly.
 
 ## Highlights
 
