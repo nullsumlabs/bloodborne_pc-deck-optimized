@@ -3,6 +3,8 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 # bbport — a native Linux port of Bloodborne
 
+**New in this branch:** [crash fixes](#crash-fixes) ported from BloodBorneButPc — crashes that no longer end the game.
+
 **English** · [Русский](README.ru.md)
 
 bbport is the counterpart of Wine + DXVK for a single game: *Bloodborne* for PlayStation 4
@@ -30,6 +32,42 @@ old memory model (see below).
 and several areas of Yharnam were played with it) with sound, gamepad and saving.
 A full play-through has not been verified, and only one machine (Linux, AMD Radeon RX 7800 XT,
 Mesa/RADV) has been tested thoroughly.
+
+## Crash fixes
+
+This branch (`awakechan-fixes`) ports the crash fixes of the Windows fork
+[BloodBorneButPc](https://github.com/Awakenchan/BloodBorneButPc) into bbport: places where the port
+used to stop the game for something the game itself survives. Each fix is one commit, so any of
+them can be reverted on its own. What was ported, what was already here and what was verified:
+[CRASH_FIXES_STATUS.md](CRASH_FIXES_STATUS.md).
+
+1. **A freeze, then a lost GPU, while an area loads.** The texture collector could free (and write
+   back) textures the GPU was still reading: 0.3–2 s stalls while an area loaded, then
+   `VK_ERROR_DEVICE_LOST` in a full-screen blit. A texture used in the last N passes is now never
+   freed, and a deleted texture's GPU objects stay a little longer. `BB_GC_RECENT_FRAMES` (48),
+   `BB_IMAGE_FREE_DELAY_FRAMES` (32); 0 turns each one off.
+2. **The game ending on a broken texture description.** A garbage descriptor made the port's own
+   logging code assert and kill the process. It now answers `"Unknown"` (and reads the value without
+   a conversion) instead.
+3. **The game ending on an unknown system setting.** An unknown sysctl name quit the game with
+   `exit(21)`. It now returns "not found" (`ENOENT`), as a real PS4 does, and the game goes on.
+4. **The game ending when a screen flip arrived out of order.** The buffer label write can still be
+   on its way from the draw-recording thread; the flip now waits for it up to 20 ms, then flips
+   anyway and logs a warning instead of stopping the game (worst case: one frame is shown twice).
+5. **A crash in audio decoding.** An audio job whose inputs could not be joined allocated their sum
+   and copied into it without checking, writing through a null pointer. The join is now bounded to
+   64 MiB and reports an error instead.
+6. **A crash while looking for saves.** The save list grew with an unchecked `realloc` and then wrote
+   through a null pointer. The growth now stops at the failure and keeps what was read.
+7. **The game ending on oversized command data.** One drawing command's data could be larger than the
+   fixed 128 KiB record block, and an assert stopped the game. Such data now gets a block of its own,
+   reused by that draw.
+
+Two of the fixes asked for were already in bbport and were not re-ported: freeing unused VRAM over a
+long session, and the larger game-memory pool for a scene above 1080p. Verified so far: the
+loader/runtime test suite, the scheduler block logic under ASan/UBSan, and the edited runtime files'
+syntax — but **the GPU tree itself has not been built** (the port was written on macOS); it needs a
+Linux build.
 
 ## Highlights
 
