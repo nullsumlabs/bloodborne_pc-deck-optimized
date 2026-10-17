@@ -32,6 +32,14 @@ if [[ -z ${CC:-} ]]; then echo 'Install GCC/Clang or set CC.' >&2; exit 1; fi
 march=${BB_DECK_MARCH:-znver2}
 mtune=${BB_DECK_MTUNE:-$march}
 deck=(-march="$march" -mtune="$mtune")
+# This host's dependency prefix (deps/build_deps.sh, a sibling of the checkout) carries SDL3,
+# miniz, protobuf, nlohmann_json and the rest the online module needs. Any other host can have the
+# same effect by exporting the variables itself before running this.
+if [[ -z ${CMAKE_PREFIX_PATH:-} && -f ../deps/env.sh ]]; then
+    # shellcheck disable=SC1091
+    source ../deps/env.sh
+    echo "Dependencies: ${PREFIX:-../deps/prefix} (../deps/env.sh)"
+fi
 # Dependencies come from pkg-config (Vulkan loader/headers, SDL3). On NixOS the
 # environment is provided by shell.nix; re-enter it automatically if needed.
 if ! { command -v pkg-config >/dev/null && pkg-config --exists vulkan sdl3 && command -v cmake >/dev/null && command -v ninja >/dev/null; }; then
@@ -70,13 +78,31 @@ if ! fsr_patches_apply --check 2>/dev/null; then
     git -C gpu/third_party/fsr-vulkan checkout -- .
 fi
 fsr_patches_apply
+# BB_NET=OFF builds the port without the online module; the packaged AppImage then plays offline
+# only, which is what packaging/appimage-ubuntu.sh refuses unless it is told the same.
+net=${BB_NET:-ON}
 cmake -S gpu -B out/gpu -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBB_PGO="$pgo" \
-    -DBB_LTO="${BB_LTO:-ON}" -DBB_PGO_DIR="$PWD/pgo" \
+    -DBB_LTO="${BB_LTO:-ON}" -DBB_PGO_DIR="$PWD/pgo" -DBB_NET="$net" \
     -DCMAKE_C_FLAGS="-march=$march -mtune=$mtune" \
-    -DCMAKE_CXX_FLAGS="-march=$march -mtune=$mtune" >/dev/null
+    -DCMAKE_CXX_FLAGS="-march=$march -mtune=$mtune" > out/gpu-configure.log 2>&1 || {
+    grep -v '^-- ' out/gpu-configure.log | tail -20 >&2
+    echo 'GPU configuration failed (full log: out/gpu-configure.log)' >&2; exit 1
+}
+grep -m1 -- '^-- Online module:' out/gpu-configure.log || true
 echo "GPU library: PGO $pgo, LTO ${BB_LTO:-ON}, $march"
+# The online module is part of the Deck package (the launcher's Online switch, and
+# packaging/appimage-ubuntu.sh installs libbbnet.so into the AppImage): a build that cannot
+# configure it stops here rather than producing a package whose online play is silently absent.
+if [[ $net == ON && -z $(grep -m1 '^build bbnet:' out/gpu/build.ninja) ]]; then
+    echo 'The online module (libbbnet.so) was not configured — the CMAKE status line above names' >&2
+    echo 'what is missing (protobuf, nlohmann_json, OpenSSL, zlib, miniupnpc). Install them, or' >&2
+    echo 'pass BB_NET=OFF to build an offline-only port.' >&2
+    exit 1
+fi
+gpu_targets=(bbgpu)
+if grep -q '^build bbnet:' out/gpu/build.ninja; then gpu_targets+=(bbnet); fi
 # A failed GPU build must stop here: an older libbbgpu.so would otherwise be used silently.
-if ! ninja -C out/gpu bbgpu $(grep -q "^build bbnet:" out/gpu/build.ninja && echo bbnet) > out/gpu-build.log 2>&1; then
+if ! ninja -C out/gpu "${gpu_targets[@]}" > out/gpu-build.log 2>&1; then
     grep -v '^\[' out/gpu-build.log | tail -40 >&2
     echo 'GPU library build failed (full log: out/gpu-build.log)' >&2; exit 1
 fi
