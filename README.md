@@ -3,7 +3,7 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 # bbport — a native Linux port of Bloodborne
 
-*New in this "nocrash" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
+*New in this "nocrash" fork:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
 
 ## Crash fixes
 
@@ -49,8 +49,10 @@ bash packaging/appimage-ubuntu.sh # -> dist/Bloodborne_PC-nocrash-bbport-steamde
 ```
 
 The flags reach every compiler call and both CMake configurations. `build.sh` and its AppImage stay
-the portable ones; `BB_DECK_MARCH=x86-64-v3` gives the Deck build a portable ISA instead. Package on
-Ubuntu 24.04: the recipe takes the 148 libraries of `packaging/appimage-libs.txt` from the host, and
+the portable ones; `BB_DECK_MARCH=x86-64-v3` gives the Deck build a portable ISA instead. Both
+scripts build the online module `libbbnet.so` (gpu/bbnet) and stop if they cannot configure it —
+the launcher's *Online* switch needs it — with `BB_NET=OFF` for an offline-only port. Package on
+Ubuntu 24.04: the recipe takes the 150 libraries of `packaging/appimage-libs.txt` from the host, and
 `--check` lists what that host is missing before copying anything (`packaging/appimage.sh` is the
 nix package instead). The `znver2` AppImage is Deck-only, and needs the host's glibc 2.38
 (SteamOS 3.6), Vulkan and MangoHud.

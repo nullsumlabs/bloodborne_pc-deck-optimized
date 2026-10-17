@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Builds the AppDir AppImage out of an Ubuntu 24.04 host's own libraries — the package that ran for
-# hours on the Steam Deck: 148 distro libraries, a distro Python 3.12, the port's own files, with
-# glibc, the Vulkan loader and driver, X11/Wayland and MangoHud left to the system. The inventory is
-# docs/APPIMAGE_DEPENDENCIES.md.
+# hours on the Steam Deck: 150 distro libraries, a distro Python 3.12, the port's own files (its
+# online module libbbnet.so included), with glibc, the Vulkan loader and driver, X11/Wayland and
+# MangoHud left to the system. The inventory is docs/APPIMAGE_DEPENDENCIES.md.
 #
 # packaging/appimage.sh is the other package: nix-appimage, a /nix/store inside, Mesa's Vulkan
 # drivers and MangoHud bundled, debug info stripped, ~399 MB. The two are not interchangeable — this
@@ -17,7 +17,8 @@
 # ffmpeg adwaita-icon-theme fonts-dejavu-core python3-gi covers most).
 #
 # BB_HOST_USR overrides /usr, BB_APPDIR the scratch directory, BB_APPIMAGE_OUT the output path and
-# BB_FORCE=1 allows writing over an existing file.
+# BB_FORCE=1 allows writing over an existing file. BB_NET=OFF packages a build made without the
+# online module (libbbnet.so) instead of refusing to package it.
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 root=$PWD
@@ -67,6 +68,15 @@ verify() {
     want "$root/packaging/bbport-apprun.c"
     # What the build produced (same two files packaging/appimage.sh insists on).
     want "$root/out/bb-probe"; want "$root/out/gpu/libbbgpu.so"; want "$root/out/bb-gpu-capabilities"
+    # The online module: part of this package, so the launcher's Online switch works in it
+    # (BB_NET=OFF for a build that is meant to play offline).
+    if [[ ${BB_NET:-ON} == ON && ! -f $root/out/gpu/libbbnet.so ]]; then
+        printf '  missing: %s\n' "$root/out/gpu/libbbnet.so" >&2
+        printf '           the online module: build with protobuf, nlohmann_json, OpenSSL, zlib and\n' >&2
+        printf '           miniupnpc present (build_steam_deck.sh names what is missing), or pass\n' >&2
+        printf '           BB_NET=OFF to package the port without online play\n' >&2
+        missing=$((missing + 1))
+    fi
     # The interpreter, its standard library and PyGObject.
     want "$host_usr/bin/python3.12"
     want "$host_usr/lib/python3.12/encodings/__init__.py"
@@ -122,6 +132,17 @@ appimagetool_path() {
     command -v appimagetool 2>/dev/null || true
 }
 
+# appimagetool looks for desktop-file-validate in PATH and refuses to package without it. An
+# appimagetool that is not installed but extracted from its own AppImage (BB_APPIMAGETOOL, the
+# way it was run on this host) carries it, and mksquashfs, beside itself: put that directory in
+# PATH. A bare name found in PATH resolves to a directory already in it, so this changes nothing
+# there.
+appimagetool="$(appimagetool_path)"
+if [[ -n $appimagetool ]]; then
+    PATH=$(dirname -- "$appimagetool"):$PATH
+    export PATH
+fi
+
 verify
 
 if [[ -n $check ]]; then
@@ -149,11 +170,13 @@ rm -rf "$share/tools/fsr4cap/__pycache__"
 install -m755 "$root/out/bb-probe" "$share/bin/bb-probe"
 install -m755 "$root/out/bb-gpu-capabilities" "$share/bin/bb-gpu-capabilities"
 install -m755 "$root/out/gpu/libbbgpu.so" "$share/bin/gpu/libbbgpu.so"
-# The online module and the DLSS bridge only when this build has them; the reference package has
-# neither. No stripping either: it carries the debug info (libbbgpu.so is 152 MB of the 189 MB of
-# libraries) and crash reports are read with those symbols.
-if [[ -f $root/out/gpu/libbbnet.so ]]; then
+# The online module (libbbnet.so, beside libbbgpu.so where the runtime loads it) and the DLSS
+# bridge only when this build has them. No stripping either: the package carries the debug info
+# (libbbgpu.so is 152 MB of the 189 MB of libraries) and crash reports are read with those symbols.
+if [[ ${BB_NET:-ON} == ON ]]; then
     install -m755 "$root/out/gpu/libbbnet.so" "$share/bin/gpu/libbbnet.so"
+else
+    echo 'BB_NET=OFF: packaging without the online module (libbbnet.so)' >&2
 fi
 if [[ -f $root/out/libbbport_dlss.so ]]; then
     install -m755 "$root/out/libbbport_dlss.so" "$share/bin/libbbport_dlss.so"
@@ -208,6 +231,6 @@ install -m644 "$icon" "$appdir/bbport.png"
 install -m644 "$icon" "$appdir/.DirIcon"
 
 mkdir -p "$(dirname -- "$out")"
-ARCH=x86_64 "$(appimagetool_path)" --no-appstream "$appdir" "$out"
+ARCH=x86_64 "$appimagetool" --no-appstream "$appdir" "$out"
 echo "AppDir $appdir: $(du -sm "$appdir" | cut -f1) MB"
 ls -lh "$out"

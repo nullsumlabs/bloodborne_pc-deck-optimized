@@ -124,6 +124,28 @@ Full list, as extracted, in [the appendix](#appendix-the-full-library-list).
 - **MangoHud, if the player wants the overlay** — not bundled here (the nix package bundles it).
 - Steam's overlay is switched off by `AppRun` rather than worked around.
 
+## The online module (`libbbnet.so`)
+
+`build.sh` / `build_steam_deck.sh` build the port's online module (`gpu/bbnet`, `BB_NET=OFF` leaves
+it out) and this recipe installs it as `usr/share/bbport/bin/gpu/libbbnet.so`, beside `libbbgpu.so`
+where `src/runtime_net.c` loads it on the game's first network or PSN import. It needs protobuf,
+nlohmann_json, OpenSSL, zlib and miniupnpc to *build*; on an Ubuntu 24.04 host protobuf's dev package
+carries headers and pkg-config but not upstream's cmake package, so `gpu/CMakeLists.txt` falls back to
+CMake's own find module. This recipe refuses to package a build that has no module — `BB_NET=OFF`
+packages one deliberately. The reference artifact above predates all of this and has none.
+
+`libbbnet.so` (45 MB, debug info kept like the other port files) is the package's one addition to
+the port's own files, and two of the 150 libraries exist for it:
+
+| Library | Why it is bundled |
+|---|---|
+| `libprotobuf.so.32` | the shadNet protocol messages, a `NEEDED` entry of `libbbnet.so` |
+| `libminiupnpc.so.17` | UPnP port mapping for the game's own server connection |
+
+Both are needed when the module is `dlopen`ed with `RTLD_NOW`, so a package without them plays
+offline and says so in the log (`Online: the online module is not available (...)`). The nix package
+(`packaging/appimage.sh`) already picked the module up when the build had it.
+
 ## How this differs from the nix package (`packaging/default.nix` + `packaging/appimage.sh`)
 
 | | this AppDir (reference) | nix-appimage |

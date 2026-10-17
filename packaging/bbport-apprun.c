@@ -36,12 +36,24 @@ static void drop(const char* name) {
     unsetenv(name);
 }
 
+/// Copies a path the runtime or the kernel gave us, or refuses it: a truncated directory would
+/// run something other than this package, so nothing here may cut it (and GCC 14's
+/// -Wformat-truncation, an error in this build, is right to ask).
+static int copy_path(char* out, size_t size, const char* text) {
+    const size_t length = strlen(text);
+    if (length >= size) {
+        fprintf(stderr, "bbport: path too long for the package: %s\n", text);
+        return -1;
+    }
+    memcpy(out, text, length + 1);
+    return 0;
+}
+
 /// The package's own directory: $APPDIR when the runtime set it, else the one holding us.
 static int package_directory(char* out, size_t size) {
     const char* appdir = getenv("APPDIR");
     if (appdir && *appdir) {
-        snprintf(out, size, "%s", appdir);
-        return 0;
+        return copy_path(out, size, appdir);
     }
     char exe[PATH_MAX];
     const ssize_t length = readlink("/proc/self/exe", exe, sizeof exe - 1);
@@ -56,8 +68,7 @@ static int package_directory(char* out, size_t size) {
         return -1;
     }
     *slash = '\0';
-    snprintf(out, size, "%s", exe);
-    return 0;
+    return copy_path(out, size, exe);
 }
 
 int main(int argc, char** argv) {
@@ -71,7 +82,10 @@ int main(int argc, char** argv) {
     }
     setenv("DISABLE_VK_LAYER_VALVE_steam_overlay_1", "1", 1);
     setenv("DISABLE_VK_LAYER_VALVE_steam_fossilize_1", "1", 1);
-    char directory[PATH_MAX];
+    // Room for TARGET_SUFFIX is what the directory buffer has to leave: the concatenation below
+    // cannot truncate then, and GCC 14's -Wformat-truncation (an error here) can see that (GCC 13
+    // did not ask). A path that would not fit is cut by APPDIR or /proc/self/exe, not here.
+    char directory[PATH_MAX - sizeof TARGET_SUFFIX];
     if (package_directory(directory, sizeof directory) < 0) {
         return 127;
     }
