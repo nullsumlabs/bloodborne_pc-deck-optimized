@@ -37,8 +37,8 @@ measurements, 25–33 ms on the Deck at 720p.
 
 | # | Goal | Side | Expected impact | Effort | State |
 |---|---|---|---|---|---|
-| 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | 0.5 ms of the 8.8 ms desktop frame (measured), ≈6% at most; ≈10–20% on the Deck, extrapolated | Medium | Open |
-| 2 | Parallel Vulkan recording (several command buffers) | CPU | Unmeasured ceiling — CPU was at 68% (545/800) at 4c/8t; ≈10–20% if half the idle capacity is recovered | Large | Not started |
+| 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | 0.2–0.5 ms/frame on the Deck (measured 2026-10-16) — ≈1–3%, not the ≈10–20% extrapolated | Medium | **Built, small** — only the declining remainder, and off by default; see §1 |
+| 2 | Parallel Vulkan recording (several command buffers) | CPU | Unmeasured ceiling — CPU was at 68% (545/800) at 4c/8t; ≈10–20% if half the idle capacity is recovered | Large | **Built since 0.3** (two threads on the Deck), never A/B'd; only matters where the CPU binds — see §2 |
 | 3 | Move the buffer side of a draw from stage B to stage A | CPU | ≤12% of stage B; ≈2–6% end-to-end | Medium | Planned |
 | 4 | ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~ | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | **Done** — `build_steam_deck.sh`; Deck run pending |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread (9% + 4%); ≈3–6% end-to-end | Medium | Idea in docs |
@@ -47,6 +47,7 @@ measurements, 25–33 ms on the Deck at 720p.
 | 8 | Occlusion / predication done by the GPU | CPU + GPU | Unquantified: ~60 events/frame, plus whatever the GPU draws that it should be culling | Medium | Verify state first |
 | 9 | AOT shaders/pipelines + shipped pipeline cache | Both | ≈0 on average FPS; removes first-run and traversal hitches | Small/Medium | Roadmap |
 | 10 | Deck-tune the streaming guards under a ~1 GB budget | Memory | ≈0 steady-state; a few % during area loads | Small | Open |
+| 11 | Skip draws that have nothing to render into (the `pass 16384x16384` labels) | GPU / recording | 0.4–1.2 ms/frame on the Deck (from the profile labels, 2026-10-16) — ≈3–6% | Small | **Built, bit 33 on by default** — visual A/B clean (2026-10-17), frame times pending |
 
 ## 1. Image-source copies for the guest `3d5ebf4e` memcpy
 
@@ -70,15 +71,32 @@ game profile (`gpu/games/bloodborne.cpp` knows only `buffer_copy_shader = 0xfefe
 read back only to be sampled later as R32F), instead of image → download → buffer → upload. Extend
 the game profile with the shader id if the shortcut keys off it.
 
-**Estimated impact:** ≈6% of the desktop frame at the very most — the profile charges `3d5ebf4e`
-0.5 ms of 8.8 ms and `parallel_gpu.md` says recognising image-source copies "would remove most of
-that". The Deck figure is an *extrapolation* in both directions: the same dispatches are
+**Estimated impact (superseded by the Deck measurement below).** ≈6% of the desktop frame at the very
+most — the profile charges `3d5ebf4e` 0.5 ms of 8.8 ms and `parallel_gpu.md` says recognising
+image-source copies "would remove most of that". The Deck figure is an *extrapolation* in both
+directions: the same dispatches are
 memory-bound, so at roughly a seventh of the bandwidth they should be a materially larger share of a
 25–33 ms frame, best guess ≈10–20% — but the desktop measurement was taken where the GPU was already
 idle 2.1 ms of the frame ("GPU idle between submissions", 24%), i.e. CPU-bound, so a GPU-side saving
 partly hides there and should convert closer to one-for-one on the Deck, where 8 CUs and 720p make
 the GPU the limiter. Cheap to falsify: the label to watch is already in `BB_GPU_PROFILE`, and the
 question to answer first is whether the GPU busy time on Deck sits at the frame time.
+
+**Measured on the Deck (2026-10-16, bit 32).** The trace had already answered most of the question
+before any code was written: the image-copy detector was turning **95 of 107** sampled dispatches of
+`3d5ebf4e` into image copies, and the 12 that declined all named the same predicate
+(`dist/deck-copytrace/LOGS/20261016_011952.log`). The build that registers that missing destination
+image from the source's layout then ran 31.7 s in the heavy area
+(`dist/deck-copydest/LOGS/20261016_024050.log`): both declining
+classes (128×128 / 65 536 B and 856×480 / 1 835 008 B) become image copies and stay in image space,
+and the class the baseline had running — `dispatch cs 3d5ebf4e (256x1x1 groups)`, 2.5–5.0 dispatches
+per frame, 0.20–0.46 ms/frame — stops running altogether. What is left of the emulated copies is one
+class the trace never sampled (`704x1x1`, 1.2–2.0/frame, 0.21–0.35 ms/frame).
+
+So the item is worth **≈0.2–0.5 ms/frame, ≈1–3% of the Deck's 17–23 ms frame**, in the frames that
+run over the 60 FPS cap. The `≈10–20%` above counted the whole 8-dispatches-a-frame family; the
+detector was already handling nearly all of it, so only the declining remainder was ever in play.
+The bit stays **off by default** (nothing promotes it), and the residual class is unidentified.
 
 **Verify.** `BB_GPU_PROFILE=1` per-label GPU ms (the profile already labels recognises, fills,
 uploads and downloads); draw counts and `BB_FRAME_STATS` unchanged; screenshots. Bits in
@@ -93,12 +111,31 @@ uploads and downloads); draw counts and `BB_FRAME_STATS` unchanged; screenshots.
 threads ~20% each. Further scaling "требует распараллелить запись Vulkan (несколько командных
 буферов) — крупная переделка, не начата".
 
-**How.** Several recording command buffers with barriers only at the seams, each owning its own
-stretch of packets. This is the item that lets the Deck use cores it currently cannot.
+**What was built (0.3, `4d4d208` 2026-10-06; async submit in 0.4).** Several command buffers: the
+scheduler cuts the stream into segments of ~64 KiB of recorded closures (`BB_VK_SEGMENT_KB`; 128 KiB
+while a render pass is open — the cut closes it and the next command buffer reopens it without
+clearing), hands them round-robin to N recording threads, and those threads submit their own segments
+(`BB_ASYNC_SUBMIT`). N is `BB_VK_RECORD_THREADS`, else 3 on ≥12 hardware threads and 2 on ≥8, so **the
+Deck already records on two threads** (its log prints `GPU: 2 Vulkan recording threads, segments of
+64 KiB`). Anchors: `vk_scheduler.cpp:100` (`RecordingThreadCount`), `:128` (`BB_VK_SEGMENT_KB`),
+`:489` (`MaybeSplit`), `:523` (`HandOver`), `:633` (`SyncRecording`); `vk_scheduler.h:590`
+(`MaxSegments` 64); `bbport_toggles.h:75` `ParallelRecording = 1 << 58` — bit *set* in the first
+number of `BB_TOGGLE_FILE` means no cuts and one recording thread, which is the in-run A/B of exactly
+this item.
 
-**Estimated impact:** the least bounded number in this file, because nothing has been built. What
-*is* measured is the headroom: 545% of 800% used at 4c/8t, i.e. roughly a third of the machine
-idle while the frame is limited. If half of that idle capacity came back the gain would be on the
+**What is left is measuring it, and on which machine it pays.** No A/B of the segmented path is
+recorded anywhere, and the default (two threads, 64 KiB) comes from a desktop figure: "one thread
+records ~75% of a core at 200 FPS (4 cores / 8 threads)". The Deck's own logs disagree on whether it
+can matter at all: in the plaza fight the GPU was busy the whole frame ("GPU idle between
+submissions" 0.77 ms/frame) — nothing on the CPU side helps there — while the static look-around run
+in the heavy area had the GPU idle 10.3 ms of a 21 ms frame with `stage B busy 80–85%`, and that is
+where two recording threads are worth checking. Sweep `BB_VK_RECORD_THREADS=1..4` and
+`BB_VK_SEGMENT_KB=16/32/64/128`, same spot, plus the `1 << 58` A/B inside one run; read the
+`Draw pipe` and `Recording: N submissions/frame, M command buffers each` lines.
+
+**Estimated impact:** the least bounded number in this file, and the one the whole CPU-side list
+hangs on. What *is* measured is the headroom: 545% of 800% used at 4c/8t, i.e. roughly a third of the
+machine idle while the frame is limited. If half of that idle capacity came back the gain would be on the
 order of 10–20%; if the chain only partly serialises, much less. Watch for the floor case —
 measurements here were taken at 209 FPS in patch mode, and at a 30 FPS target on the Deck the GPU
 may bind before the CPU does, in which case items 1 and 8 outrank this.
@@ -275,6 +312,68 @@ report still shows re-upload thrash.
 **Verify.** The pressure report in `BB_FRAME_STATS` (including the count of images kept as in use),
 stall lines, and VRAM as reported by `VK_EXT_memory_budget`.
 
+## 11. Draws with nothing to render into
+
+**What they are.** Both Deck logs (`dist/deck-copytrace/LOGS`, `dist/deck-copydest/LOGS`) carry two
+labels in most windows:
+
+```
+0.171 ms/frame   6.0/frame  pass 16384x16384 [] depth - vs 0000000089cda9e4 ps 0000000000000000
+0.405 ms/frame   1.2/frame  pass 16384x16384 [] depth - vs 0000000089cda9e4 ps 00000000e54449c7
+```
+
+`[]` is an empty attachment list and `depth -` no depth target, so the draw has nothing to render
+into: 8–12 of the first shape a frame (0.17–0.65 ms/frame) and 1–2 of the second (0.13–0.65
+ms/frame). The `16384x16384` is not a real area — with nothing attached the render state keeps the
+device's maximum extent (`vk_rasterizer.cpp`, `BeginRenderingFull`: the extent starts at
+`GetMaxFramebufferWidth/Height` and is only narrowed by each attachment), so the size in the label is
+the port's own doing.
+
+**What it costs.** Per pass, from the labels above: the first shape is cheap (0.236 ms/frame over
+8.3 draws = ~28 µs each), the second expensive (0.526 ms/frame over 1.5 = ~350 µs each), so of the
+three quarters of a millisecond most of it is the 1–2 draws with a fragment stage. Both shapes run
+with the port's maximum render area, so the driver rasterises a 16384² area with nothing attached
+for each one.
+
+**Why they should be skipped.** The old host skipped exactly these two shapes
+(`old-bbhost-nocrash/src/host/render.cpp`, the `host_gpu_draw` path: "nothing to render into" and
+"no colour, no depth write: nothing observable", counted in `draws_empty` and reported at exit), so
+there is precedent on this game. The port draws them instead, and each one opens a render pass and
+records a draw. The change is `Rasterizer::DrawUnobservable`: a draw with no color attachment and no
+depth or stencil target whose stages write no memory (no buffer store of any kind, no image store,
+no atomic) is counted and dropped — no pass, no pipeline, no descriptor set. Nothing about it can be
+observed. Gate: experiment bit **33** of `BB_TOGGLE_FILE`'s second number, so the reference
+behaviour is the bit clear and the whole thing A/Bs inside one run.
+
+**The guard has to know the port's own buffers.** The attachment test is easy (`key.mrt_mask` is the
+fragment shader's exports and drives `state.num_color_attachments`, `db_desc` is set only with
+`depth_enable` or `stencil_enable`), but "writes no memory" is not: a shader reached through the
+page table, the fault buffer, the flattened constant buffer or the clip planes carries `is_written`
+for those, and a first version of the guard counted them — which would have kept every draw in
+`BB_GUEST_IN_PLACE` runs and made the whole experiment a no-op that looked like "nothing
+happened". Only guest buffers (constant, vertex, stream, GDS), image stores and atomics count. A
+dropped draw also skips `PostDraw`: it reads no vertex buffer, writes no range and needs no note.
+The one way a draw like this can still be seen is the game's occlusion queries
+(`BB_OCCLUSION_QUERIES=1`): with nothing attached every fragment passes the depth test, so a draw
+they measure is recorded as before (the counter is not part of the reference runs, where the
+counted sequence is written when decoded).
+
+**Measured prize:** 0.6–0.8 ms/frame in the fight windows of `deck-copytrace`, up to 1.2 ms in the
+heaviest — ≈3–6% of a 17–23 ms Deck frame, more than everything goal 1 had left (≈1–3%). Not
+yet verified: whether it converts to frame time where the GPU is the limiter, and whether the guest
+reads anything back that those draws produced. The guest-side read is what `no_target_vertices`
+answers: those draws carry the game's own vertex counts, and a `VS` that writes a buffer would have
+kept the draw.
+
+**Verify.** `no-target draws skipped N/frame` in `Frame stats` (≈10 in the heavy area with the bit
+set, 0 without it); both `pass 16384x16384 []` labels gone from `BB_GPU_PROFILE`; `frames.csv` on
+and off in the same spot; screenshots identical. If the counter stays at 0 with the bit set, the
+reason is printed instead: `No-target draw kept: vs ... ps ... (a stage writes memory)` — one line
+per pipeline, the first eight, so a run that changes nothing names its own cause. Package:
+`dist/deck-notarget` (rebuilt after the guard fix: `dist/deck-notarget/gpu/libbbgpu.so`,
+`dist/deck-notarget.tar.gz` and the AppImage's
+`usr/share/bbport/bin/gpu/libbbgpu.so` are all md5 `ebb5e278…`).
+
 ## Not worth doing on the Deck
 
 - **`BB_GUEST_VRAM` / dma-buf BAR import** — needs a discrete GPU with Resizable BAR; a unified
@@ -302,8 +401,9 @@ BB_FRAME_STATS=1 BB_GPU_PROFILE=1 BB_DCB_STATS=1 BB_BUFFER_STATS=1 BB_GAME_DIR=/
 - `BB_DCB_STATS=1` — command buffers, draws and state per frame.
 - `BB_BUFFER_STATS=1` — buffer bindings per guest region, reuse distance, GPU lag.
 
-Decision rule: if GPU busy time is at or near the frame time, start at item 1. If the serial CPU
-chain sits at 90%+ while cores idle, start at items 2, 3 and 5.
+Decision rule: if GPU busy time is at or near the frame time, start at item 11 and then item 1. If
+the serial CPU chain sits at 90%+ while cores idle, start at items 3 and 5 (item 2 is already
+built, and item 11 is the one measurement away from being settled).
 
 ## How to land a change here
 
@@ -320,8 +420,9 @@ time and compared by screenshot and frame rate"). Regressions to watch: the GPU-
 
 1. ~~**Item 4** — a few build lines, no rendering behaviour touched, measurable with the existing
    µs/draw counter.~~ **Done** (`build_steam_deck.sh`); the next measurement on a Deck confirms it.
-2. **Item 1** — the largest Deck-side GPU win, and independent of the CPU work.
+2. **Item 11** — the measured GPU-side win that is left (3–6%), one Deck A/B away; then **item 1**
+   (≈1–3%, built and measured).
 3. **Items 3 and 5** — both reduce what stage B and the GPU thread must do, without the large
    refactor of item 2.
-4. **Item 2** — the structural fix for 4 cores; decide after measuring what 1, 3 and 5 already
-   bought, since it is a large rework.
+4. **Item 2** — already built (two recording threads on the Deck); sweep `BB_VK_RECORD_THREADS` and
+   `BB_VK_SEGMENT_KB` where the CPU does bind, rather than reworking it.
