@@ -594,7 +594,8 @@ void VideoOutDriver::Flip(const Request& req) {
                         "%.0f write faults/s, %lld hot pages; GPU thread %.2f us/draw, "
                         "%.0f draws/frame, idle %.1f%%; blocked: recorder %.1f%%, host copies "
                         "%.1f%% (%.0f/frame, %.0f/frame not needed), copy threads %.1f%%, GPU ticks %.1f%%; "
-                        "reduced-size draws %.0f/frame of %.0f in the scene\n",
+                        "reduced-size draws %.0f/frame of %.0f in the scene; "
+                        "no-target draws skipped %.0f/frame\n",
                         frames / window, worst_ms, EmulatorSettings.GetVblankFrequency(), compiles,
                         compile_ns / 1e6, static_cast<unsigned long long>(direct),
                         faults / window, static_cast<long long>(BbStats::hot_pages.load()),
@@ -607,7 +608,8 @@ void VideoOutDriver::Flip(const Request& req) {
                         BbStats::copy_threads_wait_ns.exchange(0) / (window * 1e7),
                         BbStats::tick_wait_ns.exchange(0) / (window * 1e7),
                         frames ? double(BbStats::reduced_draws.exchange(0)) / frames : 0.0,
-                        frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0);
+                        frames ? double(BbStats::scene_draws.exchange(0)) / frames : 0.0,
+                        frames ? double(BbStats::no_target_draws.exchange(0)) / frames : 0.0);
             VideoCore::PageManager::ReportFaultSites();
             if (const u64 notes = BbStats::cpu_write_notes.exchange(0)) {
                 std::printf("Write notices: %.0f/s, %.2f MB/s (libc copies over pages the GPU side "

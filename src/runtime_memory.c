@@ -693,16 +693,28 @@ void *runtime_low_map(size_t size, int prot) {
  * 1073741824 the lock-free UpdateImage path for clean, tracked images. */
 /* Bits 32 and up: the draw pipeline and related GPU thread work (gpu/shim/bbport_toggles.h). */
 uint64_t runtime_disabled_optimizations;
+/* bbport: the experiment bits this build starts with when BB_TOGGLE_FILE is not set, and what a
+ * file naming only its first number falls back to. Bit 33 (1ull<<33) is skip-no-target-draws
+ * (gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp, BbToggle::Experiment): a draw with no
+ * colour attachment and no depth/stencil target whose stages write no memory is dropped, which is
+ * what the shipped packages run with. A file's second number replaces this, both ways, so the A/B
+ * still works ("0 0" is the reference's behaviour). */
+#define EXPERIMENTS_ON_DEFAULT (1ull<<33)
 /* bbport: a second number in BB_TOGGLE_FILE: temporary experiment bits (BbToggle::Experiment). */
-uint64_t runtime_experiment_bits;
+uint64_t runtime_experiment_bits = EXPERIMENTS_ON_DEFAULT;
 /* Speculative readers of guest memory (GPU draw-preparation workers) register a recovery
  * point: a fault on that thread jumps back to it instead of terminating (probe.c). */
 __thread sigjmp_buf *runtime_fault_recover;
 static void *toggle_watcher(void *path) {
     for (unsigned long long last=ULLONG_MAX;;) {
         FILE *f=fopen(path,"r");
-        unsigned long long value=0, experiment=0;
-        if (f) { if (fscanf(f,"%llu %llu",&value,&experiment)<1) value=0; fclose(f); }
+        unsigned long long value=0, experiment=EXPERIMENTS_ON_DEFAULT;
+        if (f) {
+            const int fields=fscanf(f,"%llu %llu",&value,&experiment);
+            if (fields<1) value=0;
+            if (fields<2) experiment=EXPERIMENTS_ON_DEFAULT;
+            fclose(f);
+        }
         __atomic_store_n(&runtime_experiment_bits,(uint64_t)experiment,__ATOMIC_RELEASE);
         if (value!=last) {
             __atomic_store_n(&runtime_disabled_optimizations,(uint64_t)value,__ATOMIC_RELEASE);

@@ -329,6 +329,9 @@ private:
 
     bool FilterDraw();
     bool FilterDrawPasses() const;
+    /// bbport (BB_TOGGLE_FILE bit 33): a draw with no color attachment and no depth target whose
+    /// shaders write no memory — nothing it does can be observed (vk_rasterizer.cpp).
+    bool DrawUnobservable(const GraphicsPipeline* pipeline) const;
     /// Everything of a direct draw after the pipeline selection (GPU thread or stage B).
     void DrawRecord(const GraphicsPipeline* pipeline, const PreparedDraw* used_prepared,
                     bool is_indexed, u32 index_offset);
