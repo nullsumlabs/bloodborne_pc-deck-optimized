@@ -36,6 +36,13 @@ struct Profile {
     /// A compute shader (GCN program hash) that only copies buffers, into memory the translator
     /// reads on the CPU: its stores go through to the game's memory; 0 = none known.
     std::uint64_t buffer_copy_shader = 0;
+    /// The game's copies write into ranges it has not bound as images yet (they become images later
+    /// in the same frame). Those are the copies the image-copy detector declines, and each one runs
+    /// as the emulated shader: a download of the source and an upload of the destination per
+    /// dispatch. With this set, a copy whose destination has no image of its own registers one with
+    /// the source's layout instead (the two ranges are the same shape by construction). Off for a
+    /// game whose copies have not been traced: bbport, experiment bit 32 of BB_TOGGLE_FILE.
+    bool copy_destination_image = false;
 };
 
 /// Chooses the profile for the game by its TITLE_ID (bbgpu_init). BB_GAME_PROFILE=none runs the
@@ -49,6 +56,12 @@ const Profile* Active();
 inline std::uint64_t BufferCopyShader() {
     const Profile* profile = Active();
     return profile ? profile->buffer_copy_shader : 0;
+}
+
+/// Whether the active profile wants a copy's missing destination image registered (see Profile).
+inline bool CopyDestinationImage() {
+    const Profile* profile = Active();
+    return profile ? profile->copy_destination_image : false;
 }
 
 /// Whether guest_rip is in code the active profile knows to write per-frame data.

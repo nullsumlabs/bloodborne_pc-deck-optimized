@@ -39,6 +39,13 @@ extern const Profile BloodborneProfile = {
     .dynamic_writers = DynamicWriters,
     // The game's buffer-copy compute shader (not the export-stage copy shader).
     .buffer_copy_shader = 0xfefebf9f,
+    // BB_COPY_IMAGE_TRACE=3d5ebf4e on the Steam Deck (2026-10-16): the shader memcpys 1080p-sized
+    // ranges that are images on both sides, and the detector already turns most of those into
+    // image copies; the ones it declines name the destination range as unbound, and they run as
+    // the emulated shader (3 dispatches a frame in the plaza scene). The same range is an image in
+    // the frames that match, so the game binds it only later in the frame: registering it for the
+    // copy keeps those three in image space.
+    .copy_destination_image = true,
 };
 
 } // namespace Game

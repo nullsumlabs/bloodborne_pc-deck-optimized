@@ -794,6 +794,43 @@ ImageId TextureCache::FindImageFromRange(VAddr address, size_t size, bool ensure
     return {};
 }
 
+ImageId TextureCache::FindOrCreateCopyDestination(VAddr address, size_t size, const Image& source) {
+    if (address == 0 || size == 0) {
+        return {};
+    }
+    // The caller has just found the source, so the two ranges have one shape: the same size, and
+    // (where it matters) the same pitch and bits per pixel. Its description is therefore the layout
+    // the game gives such a pair — every copy the image-copy detector recognizes has two images of
+    // one shape. What belongs to the source's own memory stays there: no cmask/fmask/htile, and no
+    // stencil plane.
+    ImageInfo info = source.info;
+    info.guest_address = address;
+    info.guest_size = size;
+    info.meta_info = {};
+    info.stencil_addr = 0;
+    info.stencil_size = 0;
+    ImageDesc desc{};
+    desc.info = info;
+    desc.type = BindingType::Texture;
+    const ImageId image_id = FindImage(desc);
+    if (!image_id) {
+        return {};
+    }
+    Image& image = slot_images[image_id];
+    if (image.info.guest_address != address || image.info.guest_size != size) {
+        // The registry resolved the range into another image (an overlap with a different size).
+        // It is not the copy's, and the caller's size comparison declines it: leave it untouched.
+        return {};
+    }
+    // The copy about to be recorded fills this image, so the image is what the range holds until
+    // something downloads it: clean (RefreshImage uploads nothing over the copy) and GPU-written
+    // (SafeToDownload gives the bytes back to a guest reader, and the collector keeps it alive the
+    // way it keeps a render target).
+    image.flags = (image.flags & ImageFlagBits::Registered) | ImageFlagBits::GpuModified;
+    image.gpu_write_tick = scheduler.CurrentTick();
+    return image_id;
+}
+
 ImageView& TextureCache::FindTexture(ImageId image_id, const ImageDesc& desc, ViewMemo* memo,
                                      bool refresh) {
     Image& image = slot_images[image_id];

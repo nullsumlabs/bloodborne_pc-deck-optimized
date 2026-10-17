@@ -128,6 +128,15 @@ public:
     /// Retrieves image whose address matches provided
     [[nodiscard]] ImageId FindImageFromRange(VAddr address, size_t size, bool ensure_valid = true);
 
+    /// bbport (optimisation goal 1): the image a copy shader's destination range should have when
+    /// the game has not bound one there yet. Registered with the source image's layout — the two
+    /// ranges of a recognized copy are the same shape by construction — marked GPU-written and
+    /// clean, so nothing is uploaded over the copy and a later CPU or buffer consumer downloads
+    /// from it. Nothing when the range resolves into another (larger) image, which the caller then
+    /// declines as before.
+    [[nodiscard]] ImageId FindOrCreateCopyDestination(VAddr address, size_t size,
+                                                     const Image& source);
+
     /// bbport: a FindView result remembered by the caller for the same image and view info.
     struct ViewMemo {
         ImageId image_id{};

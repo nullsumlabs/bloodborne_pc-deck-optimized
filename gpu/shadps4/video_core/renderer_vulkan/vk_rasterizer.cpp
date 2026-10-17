@@ -2914,6 +2914,13 @@ bool Rasterizer::IsComputeMetaClear(const Pipeline* pipeline) {
     return false;
 }
 
+namespace {
+// bbport (optimisation goal 1): bit 32 of BB_TOGGLE_FILE's second number — the A/B switch of
+// registering a copy's missing destination image (BbToggle::Experiment), flipped while the game
+// runs. The active game profile decides whether its copies get this at all.
+constexpr u64 CopyDestinationImage = 1ull << 32;
+} // namespace
+
 bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run) {
     if (!pipeline->IsCompute()) {
         return false;
@@ -2945,10 +2952,24 @@ bool Rasterizer::IsComputeImageCopy(const Pipeline* pipeline, bool dry_run) {
     if (!image0_id) {
         return false;
     }
-    const auto image1_id =
-        texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
+    auto image1_id = texture_cache.FindImageFromRange(buf1.base_address, buf1.GetSize(), false);
     if (!image1_id) {
-        return false;
+        // bbport (optimisation goal 1): the destination range has no image of its own. The game
+        // binds it only later in the frame (the same range is an image in the copies that do
+        // match), so the dispatch ran as the emulated memcpy: a download of the source and an
+        // upload of the destination, every frame. The source has just been found image-shaped and
+        // the two ranges are the same size, so register an image for the destination and keep the
+        // copy in image space. A profile opts in; the experiment bit is the A/B while the game
+        // runs. A dry run only reports what this path would do, so it creates nothing.
+        if (dry_run || !Game::CopyDestinationImage() ||
+            !BbToggle::Experiment(CopyDestinationImage)) {
+            return false;
+        }
+        image1_id = texture_cache.FindOrCreateCopyDestination(buf1.base_address, buf1.GetSize(),
+                                                             texture_cache.GetImage(image0_id));
+        if (!image1_id) {
+            return false;
+        }
     }
 
     // Image copy must be valid
@@ -3182,7 +3203,9 @@ void Rasterizer::TraceImageCopyCandidate(const Pipeline* pipeline) {
             } else if (!id0) {
                 verdict = "source image exists but is not safe to download (dirty)";
             } else if (!id1) {
-                verdict = "destination range is not a registered image";
+                verdict = Game::CopyDestinationImage() && BbToggle::Experiment(CopyDestinationImage)
+                              ? "match (a destination image is registered for it)"
+                              : "destination range is not a registered image";
             } else {
                 const VideoCore::Image& image0 = texture_cache.GetImage(id0);
                 const VideoCore::Image& image1 = texture_cache.GetImage(id1);
