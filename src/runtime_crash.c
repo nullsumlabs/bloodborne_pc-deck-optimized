@@ -231,6 +231,45 @@ void runtime_crash_heap_note(uint64_t in_use, uint64_t from_system, uint64_t max
     runtime_crash_note(RuntimeCrashHeap, in_use, from_system);
 }
 
+/* The game's libc heap, from the same thread that reads the pad (as the frame statistics do). The
+ * stub at libc.prx+0x1f8c0 is looked at with a safe read: before that module is loaded, or with
+ * another libc, nothing here runs. */
+typedef struct {
+    uint16_t size, version;
+    uint32_t reserved;
+    uint64_t max_system, system, max_in_use, in_use;
+} MallocManagedSize;
+typedef int (*MallocStats)(MallocManagedSize *) __attribute__((sysv_abi));
+
+static int heap_period_seconds(void) {
+    static int period = -1;
+    if (period < 0) {
+        const char *env = getenv("BB_CRASH_HEAP_SECONDS");
+        period = env && *env ? atoi(env) : 30;
+        if (period < 1) period = 1;
+        else if (period > 3600) period = 3600;
+    }
+    return period;
+}
+
+void runtime_crash_heap_sample(void) {
+    if (!runtime_crash_on() || !image_base) return;
+    static uint64_t last;
+    const uint64_t now = now_ns();
+    if (last && now - last < (uint64_t)heap_period_seconds() * 1000000000ull) return;
+    last = now;
+    const uintptr_t stub = image_base + 0x56e0000ull + 0x1f8c0ull;
+    unsigned char code[2];
+    struct iovec local = {code, sizeof code};
+    struct iovec remote = {(void *)stub, sizeof code};
+    if (process_vm_readv(getpid(), &local, 1, &remote, 1, 0) != (ssize_t)sizeof code) return;
+    if (code[0] != 0xff || code[1] != 0x25) return; /* another libc */
+    MallocStats stats = (MallocStats)stub;
+    MallocManagedSize m = {sizeof m, 1, 0, 0, 0, 0, 0};
+    if (stats(&m) != 0) return;
+    runtime_crash_heap_note(m.in_use, m.system, m.max_in_use, m.max_system);
+}
+
 /* ---- the writer: write(2) only, flushed as it goes ---------------------------------------------- */
 
 static char out_buf[65536];

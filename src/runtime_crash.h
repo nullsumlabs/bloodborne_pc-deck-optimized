@@ -35,6 +35,10 @@ void runtime_crash_note_map(unsigned kind, uint64_t size, int64_t result, uint64
                             const uint64_t callers[3]);
 void runtime_crash_heap_note(uint64_t in_use, uint64_t from_system, uint64_t max_in_use,
                              uint64_t max_from_system);
+/* Reads the game's libc heap (malloc_stats) and notes it, every BB_CRASH_HEAP_SECONDS. Called from
+ * the thread that reads the pad: the libc's stub is checked with a safe read first, so nothing
+ * happens while that module is not loaded yet. */
+void runtime_crash_heap_sample(void);
 
 /* Writes the report up to the thread stacks and returns the descriptor (2 when no file could be
  * opened). Pass its result to runtime_crash_end() after the caller has added its own sections. */

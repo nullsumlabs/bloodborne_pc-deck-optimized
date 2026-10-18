@@ -548,6 +548,7 @@ static ABI void *posix_mmap(void *addr, uint64_t size, int prot, int flags, int 
     printf("Runtime: mmap %#" PRIx64 " bytes for the game (its heap grows) from +%#" PRIx64 " < +%#" PRIx64 " < +%#" PRIx64 "\n",
            size,sites[0],sites[1],sites[2]);
     runtime_crash_note_map(RuntimeCrashMap,size,result,result ? 0 : (uint64_t)out,sites);
+    runtime_crash_note(RuntimeCrashGrowth,runtime_heap_growths(),0);
     if (result) { *runtime_errno()=result==NO_MEMORY ? POSIX_ENOMEM : POSIX_EINVAL; return (void *)-1; }
     return out;
 }
