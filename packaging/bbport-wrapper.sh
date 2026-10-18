@@ -14,6 +14,10 @@ export GI_TYPELIB_PATH=$appdir/usr/lib/x86_64-linux-gnu/girepository-1.0:$appdir
 export XDG_DATA_DIRS=$appdir/usr/share:/usr/share:/usr/local/share
 export GSETTINGS_SCHEMA_DIR=$appdir/usr/share/glib-2.0/schemas
 export LC_ALL=${LC_ALL:-C.UTF-8}
+# The crash recorder (docs/CRASH_RECORDER_PLAN.md) is on in the packaged port: it keeps its events
+# in memory and writes one file, $BB_DATA_DIR/logs/crash-<time>.txt, only if the game dies.
+# BB_CRASH_REPORT=0 turns it off; the launcher's log names the file at start.
+export BB_CRASH_REPORT=${BB_CRASH_REPORT:-1}
 # The player's own settings, saves and generated files, outside the (read-only) package.
 export BB_DATA_DIR=${BB_DATA_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/bbport}
 mkdir -p "$BB_DATA_DIR"

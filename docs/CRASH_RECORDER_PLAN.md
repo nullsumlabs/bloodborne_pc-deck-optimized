@@ -90,6 +90,12 @@ Measured on the Deck once implemented: `frames.csv` p50/p99 unchanged within noi
 - [ ] **10. Validation on the Deck.** A soak with the game: no writes while playing, no p99 change,
       and a forced crash (`kill -SEGV`) produces a complete report.
 
+A package with the recorder on by default exists to play that soak with:
+`dist/Bloodborne_PC-flightrec--bbport-steamdeck-x86_64.AppImage`, built by
+`packaging/appimage-repack.sh` out of the 0.51.1 Deck package's libraries, with its own README in
+`dist/`. `packaging/bbport-wrapper.sh` exports `BB_CRASH_REPORT=1`, so the packaged port turns the
+recorder on without a variable being set anywhere.
+
 ## What it answers for `0x2199310`
 
 | Fact | Source in the report |
