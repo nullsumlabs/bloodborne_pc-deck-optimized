@@ -35,14 +35,15 @@ and was the guest heap climbing to its ceiling. All three are cheap to keep.
 | `BB_CRASH_REPORT` | `1` | `1` arms the recorder; `0` disables all of it (compiled-in branch, no ring, no sampler, no fd) |
 | `BB_CRASH_LOG` | `$BB_DATA_DIR/logs/crash-<time>.txt` (set by `run.sh`) | where the report goes; the file is opened **only** when the crash happens, so a clean session leaves no file |
 | `BB_CRASH_HEAP_SECONDS` | `30` | heap trend sampling period in the game-thread sampler |
-| `BB_CRASH_RING` | `32768` | ring entries (32 B each: 1 MiB at the default) |
+
+The ring is a fixed 32768 entries of 32 bytes (1 MiB), touched once at startup.
 
 ## Cost budget (acceptance)
 
 | Item | Cost |
 | --- | --- |
 | Ring push | ~10–25 ns, no syscall, no allocation, no format |
-| Ring memory | 1 MiB, `mmap`ed and pre-touched once at init |
+| Ring memory | 1 MiB, touched once at init (the note path takes no page fault) |
 | Heap sample | 2 guest calls + a few loads every 30 s, from the pad sampler thread (already runs) |
 | Disk | **zero** during play; one `open` + writes at crash time |
 | Off | one cached-boolean branch per note call |
@@ -52,36 +53,42 @@ Measured on the Deck once implemented: `frames.csv` p50/p99 unchanged within noi
 
 ## Steps
 
-- [ ] **1. `src/runtime_crash.c` + `.h` — the core.** Mode flag, ring (`ns, kind, tid, a, b`),
+- [x] **1. `src/runtime_crash.c` + `.h` — the core.** Mode flag, ring (`ns, kind, tid, a, b`),
       call-site table (top 64 callers of map/flexible, bytes + count + failures), precomputed
-      header (version, `BB_*` flags of interest, `/proc/version`), pre-touched 64 KiB scratch.
-      Public: `runtime_crash_init`, `runtime_crash_set_image`, `runtime_crash_note_*`,
-      `runtime_crash_heap_note`, `runtime_crash_report`, `runtime_crash_fd`, `runtime_crash_on`.
-      *Done when:* compiles under `-Wall -Wextra -Werror`, `BB_CRASH_REPORT=0` allocates nothing.
-- [ ] **2. Signal-safe writer.** `write(2)` only: no `malloc`, no `stdio`, no `dladdr`. Sections
+      header (build, `BB_*` flags of interest, `/proc/version`), pre-touched ring and tables.
+      Public: `runtime_crash_init`, `runtime_crash_set_image`, `runtime_crash_note`,
+      `runtime_crash_note_map`, `runtime_crash_heap_note`, `runtime_crash_heap_sample`,
+      `runtime_crash_begin`, `runtime_crash_end`, `runtime_crash_on`.
+- [x] **2. Signal-safe writer.** `write(2)` only: no `malloc`, no `stdio`, no `dladdr`. Sections
       are emitted as they are produced, so a truncated file is still readable, and end with `END`.
-      Sections: header, fault (signal, address, all 16 registers), guest windows, thread stacks,
-      `/proc/self/maps`, heap trend, call-site table, ring, END.
-- [ ] **3. Guest windows at fault time.** For each register pointing into the image, and for each
+      Sections: header, fault (signal, address, all 16 registers), guest windows, thread stacks
+      (`probe.c` between `begin` and `end`), `/proc/self/maps`, heap trend, call-site table, ring,
+      END. With the flag off the fault, registers and windows still go to stderr.
+- [x] **3. Guest windows at fault time.** For each register pointing into the image, and for each
       image pointer found in the 2 KiB of stack around `rsp`: dump 64 bytes, one hop through a
-      pointer if it leads into the image as well. Reads use `process_vm_readv`, so a bad pointer
-      cannot fault again. *This is the part that answers `queue+0x78`.*
-- [ ] **4. All-thread stacks into the report.** Parameterise `probe.c`'s `dump_frames` with an fd;
-      the watchdog path writes to the same file.
-- [ ] **5. `probe.c` wiring.** Init before the guest runs, image base after mapping, call
-      `runtime_crash_report()` from `fault()`, keep `bbgpu_handle_fault`, the recovery `siglongjmp`
-      and `bbgpu_dump_guest_writes` in front of it.
-- [ ] **6. `runtime_memory.c` hooks.** Note every `map_flexible` / `posix_mmap` (size, result or
-      error, caller triple) and every failure. Wire `runtime_heap_growths` into the header.
-- [ ] **7. Heap trend.** `runtime_pad.c`: sample `malloc_stats` every `BB_CRASH_HEAP_SECONDS` when
-      the crash report is on *or* `BB_FRAME_STATS`, and hand `in_use/system/max` to the recorder.
-      Decoupled from the expensive frame statistics.
-- [ ] **8. `run.sh`.** Create `logs/`, export `BB_CRASH_LOG` when `BB_CRASH_REPORT` is not `0`;
-      print the path at start so the file is findable after a crash.
-- [ ] **9. Test.** `tests/test_crash.c`: child arms the reporter, `SIGSEGV`s through a null store,
-      parent asserts the file has header, registers, ring, `END`. Runs in `build.sh --test`.
-- [ ] **10. Validation.** Deck soak: no writes during play, no p99 change, and a forced crash
-      (`kill -SEGV`) produces a complete report.
+      pointer if it leads into the image as well (pointers are labelled with their guest offset).
+      Reads use `process_vm_readv`, so a bad pointer cannot fault again.
+- [x] **4. All-thread stacks into the report.** `probe.c`'s `dump_frames` takes an fd; the
+      `SIGUSR2` dumper and the watchdog write to the same file.
+- [x] **5. `probe.c` wiring.** `runtime_crash_init()` at the top of `main`, image base right after
+      the image is mapped, `runtime_crash_begin/end` from `fault()` and the watchdog, after
+      `bbgpu_handle_fault`, the recovery `siglongjmp` and `bbgpu_dump_guest_writes`.
+- [x] **6. `runtime_memory.c` hooks.** Every `map_flexible` and `posix_mmap` is noted (size, address
+      or error, caller triple), every direct allocation and every refusal too — 14 direct
+      allocations and 20 flexible mappings in a measured session, so recording all of them is
+      free. The heap growth counter rides with the `posix_mmap`.
+- [x] **7. Heap trend.** `runtime_crash_heap_sample()` reads `malloc_stats` from the pad sampler
+      thread every `BB_CRASH_HEAP_SECONDS`, independent of `BB_FRAME_STATS` (which keeps its own
+      5-second print). The libc stub is looked at with a safe read first: the module may not be
+      loaded yet.
+- [x] **8. `run.sh`.** Creates `logs/`, exports `BB_CRASH_LOG=$data/logs/crash-<time>.txt` when
+      `BB_CRASH_REPORT` is not `0`, and prints the path at start.
+- [x] **9. Test.** `tests/test_crash.c` (in `build.sh --test`, needs no GPU library and no guest):
+      a child that plays and exits writes nothing; a child that stores through a null pointer
+      leaves a report with the fault, the registers, the marker read through a spilled pointer,
+      the ring and `END`; a child with `BB_CRASH_REPORT=0` writes nothing even when it crashes.
+- [ ] **10. Validation on the Deck.** A soak with the game: no writes while playing, no p99 change,
+      and a forced crash (`kill -SEGV`) produces a complete report.
 
 ## What it answers for `0x2199310`
 
@@ -91,7 +98,38 @@ Measured on the Deck once implemented: `frames.csv` p50/p99 unchanged within noi
 | was the arena exhausted, and its size | guest window at the queue pointer / one hop from it |
 | did the backing mapping fail | ring: `flexfail`/`mapfail` with size, code and caller |
 | was the heap at the ceiling | heap trend, high-water versus from-system |
-| who asked for the memory (hours ago) | call-site table |
+| who asked for the memory | call-site table |
+| everything the session grew with | the ring (all growth events since start, not just the failures) |
+
+## Verified here (this machine, no game)
+
+`bash build.sh --test` builds the port and runs every test, including `out/crash-test`, which
+crashes on purpose four times (`BB_CRASH_REPORT=1` twice, `=0` once) and reads the files back.
+A hand-run with the report path set produces (excerpt):
+
+```
+bbport crash report
+build=... kernel=...
+FAULT signal=11 (SIGSEGV) address=0x8 tid=539900
+  Guest fault (signal 11) at guest offset 0x2199310, address 0x8
+registers:
+  r12=000061e8520f2040 (guest +0x0)
+  ...
+  cr2=0x8
+  at 0x61e8520f2040 (guest +0x0)
+    +0x8: 000061e8520f2040  -> guest +0x0
+    +0x10: 1234567890abcdef
+heap: in use 4020.0 MB (most so far), from the system 4096.0 MB (most so far)
+heap trend: +0.000 s: in use 3000.0 MB, from the system 4096.0 MB ...
+0.0 MB, 2 requests, 1 refused, from +0x21992db < +0x219a104 < +0x21a0f80
+events: 7 recorded since start, capacity 32768
+  +0.000 s flexfail a=0x1000000 b=0x5 ...
+  +0.000 s direct a=0x10000000 b=0x42c00000
+END
+```
+
+`run.sh` prints `Crash report: <BB_DATA_DIR>/logs/crash-<time>.txt` and creates the directory;
+with `BB_CRASH_REPORT=0` it prints nothing and creates nothing.
 
 ## Risks
 
