@@ -28,6 +28,7 @@
  * BB_PAD_CENTER_CAL=0 disables the measurement. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "runtime_crash.h"
 #include "gpu/bbgpu.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -253,21 +254,41 @@ static SDL_Gamepad *current_gamepad(void) {
  * with libc.prx's malloc_stats (export stub at libc.prx+0x1f8c0; malloc_stats_fast returns 1 in this libc, the module at image +0x56e0000):
  * in use now and at most, and what it took from the system. A heap that keeps growing is a leak. */
 typedef struct { uint16_t size, version; uint32_t reserved; uint64_t max_system, system, max_in_use, in_use; } MallocManagedSize;
+/* The crash report wants the same numbers far less often and without the printing: a heap that
+ * climbs for hours is what a failed allocation at the end of those hours is read against. */
+static int crash_heap_period_us(void) {
+    static int period=-1;
+    if (period<0) {
+        const char *env=getenv("BB_CRASH_HEAP_SECONDS");
+        period=env && *env ? atoi(env) : 30;
+        if (period<1) period=1; else if (period>3600) period=3600;
+    }
+    return period*1000000;
+}
 static void report_guest_heap(void) {
-    static int enabled=-1; static uint64_t last;
-    if (enabled<0) enabled=getenv("BB_FRAME_STATS")!=NULL;
+    static int frame_stats=-1, crash=-1; static uint64_t last_print, last_note;
+    if (frame_stats<0) frame_stats=getenv("BB_FRAME_STATS")!=NULL;
+    if (crash<0) crash=runtime_crash_on();
+    if (!frame_stats && !crash) return;
     const uint64_t now=now_us();
-    if (!enabled || now-last<5000000) return;
-    last=now;
+    const int print_due=frame_stats && now-last_print>=5000000;
+    const int note_due=crash && now-last_note>=(uint64_t)crash_heap_period_us();
+    if (!print_due && !note_due) return;
+    if (print_due) last_print=now;
+    if (note_due) last_note=now;
     const uint8_t *stub=(const uint8_t *)(0x800000000ull+0x56e0000+0x1f8c0);
     if (stub[0]!=0xff || stub[1]!=0x25) return; /* another libc */
     ABI int (*stats)(MallocManagedSize *)=(ABI int (*)(MallocManagedSize *))(uintptr_t)stub;
     MallocManagedSize m={.size=sizeof(m),.version=1};
     const int result=stats(&m);
     if (result!=0) { static int told; if (!told++) printf("Guest heap: malloc_stats returned %#x\n",(unsigned)result); return; }
-    {
+    if (print_due) {
         printf("Guest heap: %.1f MB in use (most %.1f), %.1f MB from the system (most %.1f)\n",
                m.in_use/1048576.0,m.max_in_use/1048576.0,m.system/1048576.0,m.max_system/1048576.0);
+    }
+    if (note_due) {
+        runtime_crash_heap_note(m.in_use,m.system,m.max_in_use,m.max_system);
+        runtime_crash_note(RuntimeCrashGrowth,runtime_heap_growths(),0);
     }
 }
 /* Controls: what each PS4 input is bound to. Defaults below; bbport.ini (BB_CONFIG) lines
