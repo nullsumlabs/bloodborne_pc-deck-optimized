@@ -135,7 +135,7 @@ echo "Built $PWD/out/bb-probe ($march)"
 # GPU check for run.sh (live_resolution=auto) and the launcher's gamepad list (--gamepads).
 "$CC" -std=c11 -O2 -Wall -Wextra -Werror "${deck[@]}" "${includes[@]}" tools/gpu_capabilities.c "${libraries[@]}" -o out/bb-gpu-capabilities
 if [[ ${1:-} == --test ]]; then
-    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${deck[@]}" "${includes[@]}" -I. -Isrc tests/test_pad.c "${libraries[@]}" -o out/pad-test
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${deck[@]}" "${includes[@]}" -I. -Isrc tests/test_pad.c src/runtime_crash.c "${libraries[@]}" -o out/pad-test
     out/pad-test
     "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${deck[@]}" -I. -Isrc tests/test_runtime.c "${runtime[@]}" out/libatrac9.a -lm "${gpu[@]}" "${libraries[@]}" -o out/runtime-test
     out/runtime-test
@@ -147,4 +147,7 @@ if [[ ${1:-} == --test ]]; then
     out/online-test
     "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror "${deck[@]}" -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
     out/content-test
+    # The crash recorder on its own: it needs no GPU library and no guest.
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread "${deck[@]}" -I. -Isrc tests/test_crash.c src/runtime_crash.c -o out/crash-test
+    out/crash-test
 fi
