@@ -21,10 +21,8 @@
 
 #ifndef _WIN32
 #include <signal.h>
+#include <sys/syscall.h> /* SYS_gettid: the note path must not pay for getpid() */
 #include <ucontext.h>
-#ifdef SYS_gettid
-#include <sys/syscall.h>
-#endif
 
 #define CAP (1u << 15)
 #define TABLE_SLOTS 64u
@@ -69,9 +67,12 @@ static uint64_t now_ns(void) {
     return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
 }
 
+/* Cached per thread: the call itself is a system call, and this is read on the note path. */
 static uint32_t thread_id(void) {
 #ifdef SYS_gettid
-    return (uint32_t)syscall(SYS_gettid);
+    static __thread uint32_t cached;
+    if (!cached) cached = (uint32_t)syscall(SYS_gettid);
+    return cached;
 #else
     return (uint32_t)getpid();
 #endif

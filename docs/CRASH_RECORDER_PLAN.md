@@ -42,7 +42,7 @@ The ring is a fixed 32768 entries of 32 bytes (1 MiB), touched once at startup.
 
 | Item | Cost |
 | --- | --- |
-| Ring push | ~10–25 ns, no syscall, no allocation, no format |
+| Ring push | 24 ns measured here (15 ns of it is the timestamp), no syscall, no allocation, no format |
 | Ring memory | 1 MiB, touched once at init (the note path takes no page fault) |
 | Heap sample | 2 guest calls + a few loads every 30 s, from the pad sampler thread (already runs) |
 | Disk | **zero** during play; one `open` + writes at crash time |
@@ -130,6 +130,12 @@ END
 
 `run.sh` prints `Crash report: <BB_DATA_DIR>/logs/crash-<time>.txt` and creates the directory;
 with `BB_CRASH_REPORT=0` it prints nothing and creates nothing.
+
+The note path, 10 million notes in a loop: **24.2 ns** with the recorder on, 1.4 ns with it off
+(the cached flag). The first version of this measured 370 ns per note, because
+`#include <sys/syscall.h>` sat inside `#ifdef SYS_gettid` — the macro that header defines, so
+`thread_id()` fell through to `getpid()`, which is a 345 ns system call on this machine. The
+thread id is read once per thread now.
 
 ## Risks
 
