@@ -5,6 +5,7 @@
  * encode 40-bit addresses, so host-default 0x7f... addresses would not fit. */
 #define _GNU_SOURCE
 #include "runtime.h"
+#include "runtime_crash.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -393,12 +394,14 @@ static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
     uint64_t end = (uint64_t)high < POOL_SIZE ? (uint64_t)high : POOL_SIZE;
     if ((uint64_t)low >= end || size > end - (uint64_t)low) return NO_SPACE;
     write_lock();
-    if (pool()) { write_unlock(); return NO_MEMORY; }
+    if (pool()) { write_unlock(); runtime_crash_note(RuntimeCrashDirectFail,size,NO_MEMORY); return NO_MEMORY; }
     uint64_t start = align_up((uint64_t)low, alignment);
     int slot = -1;
     for (int i=0; i<LIMIT; ++i) if (!blocks[i].used) { slot=i; break; }
     for (;;) {
-        if (slot<0 || start > end || size > end-start) { write_unlock(); return NO_SPACE; }
+        if (slot<0 || start > end || size > end-start) {
+            write_unlock(); runtime_crash_note(RuntimeCrashDirectFail,size,NO_SPACE); return NO_SPACE;
+        }
         int overlap = 0;
         for (int i=0; i<LIMIT; ++i) {
             Block b = blocks[i];
@@ -412,6 +415,7 @@ static ABI int32_t direct_allocate(int64_t low, int64_t high, uint64_t size,
     ensure_chunks(start,size);
     ++allocations; live_bytes += size;
     write_unlock();
+    if (runtime_crash_on()) runtime_crash_note(RuntimeCrashDirect,size,start);
     printf("Runtime: direct allocation offset=0x%" PRIx64 ", size=%" PRIu64 " bytes, type=%d\n", start, size, type);
     return 0;
 }
@@ -431,6 +435,7 @@ static ABI int32_t direct_map(void **out, uint64_t size, int prot, int flags, in
     flush_hooks();
     if (!result) printf("Runtime: mapped direct memory %p, size=%" PRIu64 ", prot=0x%x\n", *out, size, prot);
     else printf("Runtime: mapping direct memory %#" PRIx64 ", size=%" PRIu64 " failed (error %#x)\n", (uint64_t)physical, size, (unsigned)result);
+    if (result) runtime_crash_note(RuntimeCrashDirectFail,size,(uint64_t)(uint32_t)result);
     return result;
 }
 static ABI int32_t direct_map_named(void **out, uint64_t size, int prot, int flags, int64_t physical,
@@ -513,6 +518,12 @@ static ABI int32_t map_flexible(void **inout, uint64_t size, int prot, int flags
     if (!result) printf("Runtime: mapped flexible memory %p, size=%" PRIu64 ", prot=0x%x\n", *inout, size, prot);
     else fprintf(stderr,"Runtime: flexible map of %" PRIu64 " bytes failed (0x%x), in use=%" PRIu64 "\n",
                  size, (unsigned)result, flexible_bytes);
+    /* A flexible mapping is rare (tens a session): the crash report keeps each one. */
+    if (runtime_crash_on()) {
+        uint64_t sites[3];
+        runtime_guest_call_sites(sites);
+        runtime_crash_note_map(RuntimeCrashFlex,size,result,result ? 0 : (uint64_t)*inout,sites);
+    }
     return result;
 }
 static ABI int32_t map_flexible_named(void **inout, uint64_t size, int prot, int flags, const char *name) {
@@ -536,6 +547,7 @@ static ABI void *posix_mmap(void *addr, uint64_t size, int prot, int flags, int 
     runtime_guest_call_sites(sites);
     printf("Runtime: mmap %#" PRIx64 " bytes for the game (its heap grows) from +%#" PRIx64 " < +%#" PRIx64 " < +%#" PRIx64 "\n",
            size,sites[0],sites[1],sites[2]);
+    runtime_crash_note_map(RuntimeCrashMap,size,result,result ? 0 : (uint64_t)out,sites);
     if (result) { *runtime_errno()=result==NO_MEMORY ? POSIX_ENOMEM : POSIX_EINVAL; return (void *)-1; }
     return out;
 }

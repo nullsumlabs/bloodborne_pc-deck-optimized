@@ -18,8 +18,10 @@ enum {
     RuntimeCrashMapFail,
     RuntimeCrashFlex, /* sceKernelMapFlexibleMemory: a = size, b = address */
     RuntimeCrashFlexFail,
+    RuntimeCrashDirect, /* a direct allocation: a = size, b = its physical offset */
+    RuntimeCrashDirectFail,
     RuntimeCrashHeap, /* a = in use, b = from the system */
-    RuntimeCrashGrowth, /* a = heap growths so far, b = flexible bytes in use */
+    RuntimeCrashGrowth, /* a = heap growths so far, b = bytes in use by the flexible pool */
     RuntimeCrashMark, /* anything else: a, b */
     RuntimeCrashKindCount
 };

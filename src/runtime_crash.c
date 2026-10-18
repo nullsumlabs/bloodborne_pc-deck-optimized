@@ -322,6 +322,8 @@ static const char *kind_name(unsigned kind) {
     case RuntimeCrashMapFail: return "mapfail";
     case RuntimeCrashFlex: return "flex";
     case RuntimeCrashFlexFail: return "flexfail";
+    case RuntimeCrashDirect: return "direct";
+    case RuntimeCrashDirectFail: return "directfail";
     case RuntimeCrashHeap: return "heap";
     case RuntimeCrashGrowth: return "growth";
     case RuntimeCrashMark: return "mark";
@@ -559,7 +561,8 @@ static void dump_callers(void) {
 }
 
 static int is_important(unsigned kind) {
-    return kind == RuntimeCrashMapFail || kind == RuntimeCrashFlexFail || kind == RuntimeCrashMark;
+    return kind == RuntimeCrashMapFail || kind == RuntimeCrashFlexFail ||
+           kind == RuntimeCrashDirectFail || kind == RuntimeCrashMark;
 }
 
 static void dump_ring(void) {
@@ -614,6 +617,9 @@ static void dump_ring(void) {
             put(" MB, system ");
             put_mb(e->b);
             put(" MB");
+        } else if (e->kind == RuntimeCrashGrowth) {
+            put(" heap growths=");
+            put_dec(e->a);
         } else {
             put(" a=");
             put_hex(e->a);
