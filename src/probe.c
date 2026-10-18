@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include <cpuid.h>
 #include "runtime.h"
+#include "runtime_crash.h"
 #include "gpu/bbgpu.h"
 #if !defined(__x86_64__) || !defined(__GNUC__)
 #error This prototype requires x86-64 GCC or Clang (including MinGW).
@@ -138,6 +139,9 @@ __asm__(".text\n.globl enter_on_stack\nenter_on_stack:\n"
 #endif
 static ABI void guest_exit(void) { puts("Runtime: process finalizer callback reached"); }
 #ifndef _WIN32
+/* Where a crash dump goes: 2, or the report's file (runtime_crash.h). */
+static int dump_fd = 2;
+static void dump_frames(ucontext_t *uc, int fd);
 static void fault(int sig, siginfo_t *info, void *context) {
     /* GPU page tracking (write-protected guest pages) is resolved first. */
     if (gpu_enabled && sig == SIGSEGV && bbgpu_handle_fault(context, info->si_addr)) return;
@@ -164,27 +168,17 @@ static void fault(int sig, siginfo_t *info, void *context) {
                  (unsigned long)(rip - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?", info->si_addr);
     else
         snprintf(line, sizeof(line), "Fault (signal %d) at RIP %p, address %p\n", sig, (void *)rip, info->si_addr);
-    { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
     if (gpu_enabled) bbgpu_dump_guest_writes(context);
-    /* Outside the image and any shared object (generated code, a freed mapping): the mapping
-     * from /proc/self/maps, and the thread. */
-    if (rip - (uintptr_t)image >= 0x10000000 && !(dladdr((void *)rip, &where) && where.dli_fname)) {
+    /* The report (BB_CRASH_REPORT, default on): header, fault, registers, guest memory windows.
+     * It opens its file here, so a session that does not crash leaves none. */
+    const int fd = runtime_crash_begin(sig, (uintptr_t)info->si_addr, context, line);
+    dump_fd = fd;
+    {
         char thread[32] = "?";
+        char named[64];
         pthread_getname_np(pthread_self(), thread, sizeof(thread));
-        snprintf(line, sizeof(line), "  thread %s; mapping of RIP: ", thread);
-        { ssize_t written_=write(2, line, strlen(line)); (void)written_; }
-        FILE *maps = fopen("/proc/self/maps", "r");
-        int found = 0;
-        while (maps && fgets(line, sizeof(line), maps)) {
-            unsigned long from, to;
-            if (sscanf(line, "%lx-%lx", &from, &to) == 2 && rip >= from && rip < to) {
-                ssize_t written_=write(2, line, strlen(line)); (void)written_;
-                found = 1;
-                break;
-            }
-        }
-        if (maps) fclose(maps);
-        if (!found) { ssize_t written_=write(2, "none\n", 5); (void)written_; }
+        const int n = snprintf(named, sizeof(named), "  thread %s\n", thread);
+        ssize_t written_=write(fd, named, (size_t)(n > 0 ? n : 0)); (void)written_;
     }
     /* Host call chain (frames with unwind info; guest frames end it). */
     void *frames[32];
@@ -195,8 +189,11 @@ static void fault(int sig, siginfo_t *info, void *context) {
                      (unsigned long)((uintptr_t)frames[i] - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?");
         else
             snprintf(line, sizeof(line), "  #%d %p\n", i, frames[i]);
-        ssize_t written_=write(2, line, strlen(line)); (void)written_;
+        ssize_t written_=write(fd, line, strlen(line)); (void)written_;
     }
+    /* Every thread, then the ring, the heap trend and the maps. */
+    dump_frames(context, fd);
+    runtime_crash_end(fd);
     _exit(128 + sig);
 }
 #endif
@@ -207,17 +204,17 @@ static void write_hex(char *out, uint64_t v) {
     const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) out[i] = digits[(v >> (60 - i * 4)) & 15];
 }
-static void dump_frames(ucontext_t *uc) {
+static void dump_frames(ucontext_t *uc, int fd) {
     char line[] = "  tid=0000000000000000 rip=0000000000000000 image-relative=0000000000000000 host-relative=0000000000000000\n";
     uintptr_t rip=(uintptr_t)uc->uc_mcontext.gregs[REG_RIP], rbp=(uintptr_t)uc->uc_mcontext.gregs[REG_RBP];
     uint64_t tid=(uint64_t)gettid();
     /* First argument register: the lock address when a thread waits on a futex. */
     char arg[]="  tid=0000000000000000 rdi=0000000000000000\n";
     write_hex(arg+6,tid); write_hex(arg+27,(uint64_t)uc->uc_mcontext.gregs[REG_RDI]);
-    { ssize_t written_=write(2,arg,sizeof(arg)-1); (void)written_; }
+    { ssize_t written_=write(fd,arg,sizeof(arg)-1); (void)written_; }
     for (int depth=0; depth<24; ++depth) {
         write_hex(line+6,tid); write_hex(line+27,rip); write_hex(line+59,rip-(uintptr_t)image); write_hex(line+90,rip-exe_base);
-        { ssize_t written_=write(2,line,sizeof(line)-1); (void)written_; }
+        { ssize_t written_=write(fd,line,sizeof(line)-1); (void)written_; }
         uintptr_t frame[2];
         struct iovec local={frame,sizeof(frame)}, remote={(void *)rbp,sizeof(frame)};
         if (!rbp || process_vm_readv(getpid(),&local,1,&remote,1,0)!=(ssize_t)sizeof(frame)) break;
@@ -225,12 +222,14 @@ static void dump_frames(ucontext_t *uc) {
         rbp=frame[0]; rip=frame[1];
     }
 }
-static void thread_dump(int sig, siginfo_t *info, void *context) { (void)sig; (void)info; dump_frames(context); }
+static void thread_dump(int sig, siginfo_t *info, void *context) { (void)sig; (void)info; dump_frames(context, dump_fd); }
 static void watchdog(int sig, siginfo_t *info, void *context) {
     (void)info;
     const char head[]="STOP: watchdog timeout; thread stacks:\n";
-    { ssize_t written_=write(2,head,sizeof(head)-1); (void)written_; }
-    dump_frames(context);
+    const int fd=runtime_crash_begin(sig,0,context,"watchdog: the guest stopped making progress\n");
+    dump_fd=fd;
+    { ssize_t written_=write(fd,head,sizeof(head)-1); (void)written_; }
+    dump_frames(context, fd);
     int dir=open("/proc/self/task",O_RDONLY|O_DIRECTORY);
     char buffer[4096];
     long n;
@@ -243,6 +242,7 @@ static void watchdog(int sig, siginfo_t *info, void *context) {
             at+=d->reclen;
         }
     usleep(100000);
+    runtime_crash_end(fd);
     _exit(128 + sig);
 }
 /* param.sfo lookup: string or integer value of key, 0 when absent. */
@@ -331,6 +331,8 @@ void runtime_restart(void) {
 
 int main(int argc, char **argv) {
     setvbuf(stdout, NULL, _IONBF, 0);
+    /* BB_CRASH_REPORT=0: no ring, no sampler, nothing to write. */
+    runtime_crash_init();
 #ifndef _WIN32
     /* Keep host heap objects handed to the guest (thread handles, TLS) in the
        non-PIE brk heap, i.e. below 1 TiB: the guest packs pointers into 40 bits. */
@@ -496,6 +498,7 @@ int main(int argc, char **argv) {
         }
     }
     image = allocate(round_page(size));
+    runtime_crash_set_image((uintptr_t)image, size);
     if (fread(image, 1, size, f) != size || fgetc(f) != EOF) fail("incorrect memory image size");
     fclose(f);
     if (!cpu_only) {
