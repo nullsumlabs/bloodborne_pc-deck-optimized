@@ -123,4 +123,7 @@ if [[ ${1:-} == --test ]]; then
     out/online-test
     "$CC" -std=c11 -D_GNU_SOURCE -O2 -g -Wall -Wextra -Werror -I. -Isrc tests/test_content.c src/runtime_content.c -o out/content-test
     out/content-test
+    # The crash recorder on its own: it needs no GPU library and no guest.
+    "$CC" -std=c11 -O2 -g -Wall -Wextra -Werror -pthread -I. -Isrc tests/test_crash.c src/runtime_crash.c -o out/crash-test
+    out/crash-test
 fi

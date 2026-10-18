@@ -143,6 +143,7 @@ void runtime_crash_init(void) {
     hput(path_buf);
     hput("\n");
     hput_env("BB_CRASH_REPORT");
+    hput_env("BB_CRASH_HEAP_SECONDS");
     hput_env("BB_FPS");
     hput_env("BB_RENDER_RES");
     hput_env("BB_OUTPUT_RES");
@@ -447,11 +448,6 @@ int runtime_crash_begin(int sig, uintptr_t address, void *context, const char *f
         if (fd >= 0) out_fd = fd;
     }
     out_put(header, header_len);
-    if (enabled) {
-        put("report=");
-        put(path_buf);
-        put("\n");
-    }
     put("\nFAULT signal=");
     put_dec((uint64_t)sig);
     put(" (");
@@ -510,6 +506,7 @@ static void dump_heap(void) {
     put(" MB (most so far)\n");
     const uint64_t n = atomic_load_explicit(&ring_head, memory_order_relaxed);
     const uint64_t first = n > CAP ? n - CAP : 0;
+    put("heap trend (in use, from the system; sampled since the process started):\n");
     int shown = 0;
     for (uint64_t i = first; i < n; ++i) {
         const Entry *e = &ring[i % CAP];
@@ -585,25 +582,29 @@ static void dump_ring(void) {
         put("  (none)\n");
         return;
     }
-    put("  refusals and marks, any time in the ring:\n");
-    int earlier = 0;
-    for (uint64_t i = first; i < recent; ++i) {
-        const Entry *e = &ring[i % CAP];
-        if (!is_important(e->kind)) continue;
-        put("  +");
-        put_time(e->ns);
-        put(" s ");
-        put(kind_name(e->kind));
-        put(" size=");
-        put_dec(e->a);
-        put(" code=");
-        put_hex(e->b);
-        put(" tid=");
-        put_dec(e->tid);
-        put("\n");
-        ++earlier;
+    /* Only worth a section when the ring has actually wrapped: before that, everything below is
+     * in the "last events" list anyway. */
+    if (first < recent) {
+        put("  refusals and marks among the overwritten events:\n");
+        int earlier = 0;
+        for (uint64_t i = first; i < recent; ++i) {
+            const Entry *e = &ring[i % CAP];
+            if (!is_important(e->kind)) continue;
+            put("  +");
+            put_time(e->ns);
+            put(" s ");
+            put(kind_name(e->kind));
+            put(" size=");
+            put_dec(e->a);
+            put(" code=");
+            put_hex(e->b);
+            put(" tid=");
+            put_dec(e->tid);
+            put("\n");
+            ++earlier;
+        }
+        if (!earlier) put("  (none)\n");
     }
-    if (!earlier) put("  (none)\n");
     put("  the last events:\n");
     for (uint64_t i = recent; i < n; ++i) {
         const Entry *e = &ring[i % CAP];
@@ -635,9 +636,13 @@ static void dump_ring(void) {
 void runtime_crash_end(int fd) {
     out_fd = fd >= 0 ? fd : 2;
     dump_maps();
-    dump_heap();
-    dump_callers();
-    dump_ring();
+    /* With BB_CRASH_REPORT=0 there is no ring and no trend: the fault, the registers and the guest
+     * memory still go to stderr, and nothing else. */
+    if (enabled) {
+        dump_heap();
+        dump_callers();
+        dump_ring();
+    }
     put("\nEND\n");
     out_flush();
     if (out_fd > 2) close(out_fd);
