@@ -38,6 +38,15 @@ if [[ -z ${BB_PREBUILT:-} && -z ${BB_IN_NIX_SHELL:-} ]] && ! { command -v pkg-co
     args=''; if (( $# )); then args=$(printf '%q ' "$@"); fi
     exec env BB_IN_NIX_SHELL=1 nix-shell shell.nix --run "bash run.sh $args"
 fi
+# BB_CRASH_REPORT (default on, BB_CRASH_REPORT=0 disables it): the port keeps a ring of the
+# memory events of the session in memory and writes ONE report when the game dies. Nothing is
+# written while playing, so a normal exit leaves no file here; the path is printed to find it.
+if [[ ${BB_CRASH_REPORT:-1} != 0 && -z ${BB_CRASH_LOG:-} ]]; then
+    mkdir -p "$data/logs"
+    printf -v crash_stamp '%(%Y%m%d_%H%M%S)T' -1
+    export BB_CRASH_LOG=$data/logs/crash-$crash_stamp.txt
+fi
+[[ -z ${BB_CRASH_LOG:-} ]] || echo "Crash report: $BB_CRASH_LOG (written only if the game crashes)"
 # BB_SAVE_LOG=1 (launcher: "Save the log and statistics to a file"): this run's output and its
 # per-frame statistics also go to $data/logs/<time>.log, .frames.csv and .readbacks.csv.
 if [[ ${BB_SAVE_LOG:-} == 1 ]]; then
