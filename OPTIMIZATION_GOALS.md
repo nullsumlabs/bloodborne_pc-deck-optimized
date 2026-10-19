@@ -1,7 +1,8 @@
 # Performance goals — Steam Deck first
 
 Optimisations worth doing that are **not** quality reductions (no preset, resolution or upscaler
-downgrades). Compiled 2026-10-15 from this project's own measurements and design notes:
+downgrades). Compiled 2026-10-15, state as of 2026-10-19, from this project's own measurements and
+design notes:
 [parallel_gpu.md](docs/parallel_gpu.md), [CHANGES_2026-10-03.md](docs/CHANGES_2026-10-03.md),
 [EMULATION_REMOVAL_PLAN.ru.md](docs/EMULATION_REMOVAL_PLAN.ru.md),
 [TRANSLATION_GPU_COPY_LABELS.ru.md](docs/TRANSLATION_GPU_COPY_LABELS.ru.md),
@@ -40,14 +41,35 @@ measurements, 25–33 ms on the Deck at 720p.
 | 1 | Image-source copies for the guest `3d5ebf4e` memcpy | GPU / bandwidth | 0.2–0.5 ms/frame on the Deck (measured 2026-10-16) — ≈1–3%, not the ≈10–20% extrapolated | Medium | **Built, small** — only the declining remainder, and off by default; see §1 |
 | 2 | Parallel Vulkan recording (several command buffers) | CPU | Unmeasured ceiling — CPU was at 68% (545/800) at 4c/8t; ≈10–20% if half the idle capacity is recovered | Large | **Built since 0.3** (two threads on the Deck), never A/B'd; only matters where the CPU binds — see §2 |
 | 3 | Move the buffer side of a draw from stage B to stage A | CPU | ≤12% of stage B; ≈2–6% end-to-end | Medium | Planned |
-| 4 | ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~ | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | **Done** — `build_steam_deck.sh`; Deck run pending |
+| 4 | ~~Deck-targeted build: `-march`/`-mtune` + PGO profile~~ | CPU | ≈4–5% (measured for LTO+PGO); `-march` should add a little on the Deck | Small | **Done** — `build_steam_deck.sh`, in 0.51.1 and flightrec; never played, so no Deck A/B |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread (9% + 4%); ≈3–6% end-to-end | Medium | Idea in docs |
 | 6 | Cheaper object motion vectors | CPU | ≤10% measured with motion off; ≈3–6% recoverable | Medium | Open |
 | 7 | Scope `-fno-omit-frame-pointer` to the loader | CPU | ≈0–2%, usually under 1% | Small | Open |
 | 8 | Occlusion / predication done by the GPU | CPU + GPU | Unquantified: ~60 events/frame, plus whatever the GPU draws that it should be culling | Medium | Verify state first |
 | 9 | AOT shaders/pipelines + shipped pipeline cache | Both | ≈0 on average FPS; removes first-run and traversal hitches | Small/Medium | Roadmap |
 | 10 | Deck-tune the streaming guards under a ~1 GB budget | Memory | ≈0 steady-state; a few % during area loads | Small | Open |
-| 11 | Skip draws that have nothing to render into (the `pass 16384x16384` labels) | GPU / recording | 0.4–1.2 ms/frame on the Deck (from the profile labels, 2026-10-16) — ≈3–6% | Small | **Built, bit 33 on by default** — visual A/B clean (2026-10-17), frame times pending |
+| 11 | Skip draws that have nothing to render into (the `pass 16384x16384` labels) | GPU / recording | 0.4–1.2 ms/frame on the Deck (from the profile labels, 2026-10-16) — ≈3–6% | Small | **Built, bit 33 on by default** (shipped in 0.51.1 and flightrec) — visual A/B clean (2026-10-17), frame times pending |
+
+## Where we are (2026-10-19)
+
+The newest frame times in this file are still the 2026-10-16 Deck profiles behind items 1 and 11;
+**no optimisation A/B has run since**, so *State* below means built, not confirmed on Deck:
+
+- **Built and shipping:** item 4 — 0.51.1 (2026-10-17) and the 2026-10-18
+  `dist/Bloodborne_PC-flightrec--…AppImage` both carry `-march=znver2` binaries, but neither has
+  been played, so the ≈4–5% is still the desktop LTO+PGO figure (the PGO profile is still
+  desktop-trained). Item 11 ships on by default; its 2026-10-17 visual A/B on the Deck was clean,
+  and its `frames.csv` was never read.
+- **Built and off:** item 1, behind profile + bit 32 — its ≈1–3% comes from the traces and logs,
+  not a frame time; the residual `704x1x1` copy class is still unidentified.
+- **Built and never measured:** item 2 — the Deck already records on two threads; the
+  `BB_VK_RECORD_THREADS` / `BB_VK_SEGMENT_KB` sweep is still the way to settle it.
+- **Untouched plans:** items 3, 5, 6, 7, 10; item 8's active occlusion path is still not
+  established; item 9 is on the roadmap.
+- **One new per-frame cost to account for:** the crash recorder, on by default in flightrec —
+  ~24 ns a note, no syscall, no allocation, a 1 MiB ring, zero disk writes while playing, but the
+  frame-time half of its budget (`frames.csv` p50/p99 with it on) is unmeasured, so it belongs in
+  the same Deck run as item 11's frames.
 
 ## 1. Image-source copies for the guest `3d5ebf4e` memcpy
 
@@ -164,10 +186,11 @@ equality across the stages; frame rate A/B in one run.
 
 **Done** — `build_steam_deck.sh` (commit `622e59d`): build.sh plus `-march=znver2 -mtune=znver2` on
 every compiler invocation and on CMake's `CMAKE_C(XX)_FLAGS` (so the subprojects get it too). Still
-open: the ≈4–5% below is a desktop measurement, the profile in `pgo/` is still desktop-trained
-(`BB_PGO=generate` on the Deck, a few minutes of play, rebuild), and the AppImage that has been
-played for hours is the *portable* one — it predates this script. What that package carries and what
-the host must supply is now recorded in [APPIMAGE_DEPENDENCIES.md](docs/APPIMAGE_DEPENDENCIES.md).
+open: the ≈4–5% below is a desktop measurement and the profile in `pgo/` is still desktop-trained
+(`BB_PGO=generate` on the Deck, a few minutes of play, rebuild). The two AppImages that carry this
+script's binaries — 0.51.1 and the 2026-10-18 flightrec package — have not been played, and the
+package that was played for hours predates the script. What a package carries and what the host
+must supply is recorded in [APPIMAGE_DEPENDENCIES.md](docs/APPIMAGE_DEPENDENCIES.md).
 
 ~~**Why.** There is no `-march`, `-mtune` or ISA level anywhere in `build.sh`, `gpu/CMakeLists.txt`,
 `shell.nix` or `packaging/` — deliberately, "the same build runs on the Steam Deck"
@@ -359,9 +382,11 @@ they measure is recorded as before (the counter is not part of the reference run
 counted sequence is written when decoded).
 
 **Measured prize:** 0.6–0.8 ms/frame in the fight windows of `deck-copytrace`, up to 1.2 ms in the
-heaviest — ≈3–6% of a 17–23 ms Deck frame, more than everything goal 1 had left (≈1–3%). Not
-yet verified: whether it converts to frame time where the GPU is the limiter, and whether the guest
-reads anything back that those draws produced. The guest-side read is what `no_target_vertices`
+heaviest — ≈3–6% of a 17–23 ms Deck frame, more than everything goal 1 had left (≈1–3%). The
+2026-10-17 Deck A/B was by eye only — frames matched with the bit on and off, which is what left it
+on by default; the `frames.csv` from that run was not read. Not yet verified: whether the prize
+converts to frame time where the GPU is the limiter, and whether the guest reads anything back that
+those draws produced. The guest-side read is what `no_target_vertices`
 answers: those draws carry the game's own vertex counts, and a `VS` that writes a buffer would have
 kept the draw.
 
