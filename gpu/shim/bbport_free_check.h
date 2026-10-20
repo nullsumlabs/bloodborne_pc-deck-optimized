@@ -11,7 +11,9 @@
 // - A watcher thread walks the free lists of the pool pages those writes touched every
 //   millisecond and reports a corrupted list (a next pointer outside the page) as soon as it
 //   appears, with the recent emulator writes into that page. A corruption with no emulator
-//   write around it was written by the game itself.
+//   write around it was written by the game itself. Pages with no write and no free list
+//   change for 30 s are dropped (a session is hours long, and reading every page ever would
+//   cost most of a core); the next emulator write into a page brings it back.
 #pragma once
 
 #include <cstdint>
