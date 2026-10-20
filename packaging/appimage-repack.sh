@@ -53,6 +53,17 @@ if [[ -z $from ]]; then
     [[ -n $from ]] || die "no AppImage in dist/ to repack from (--from <file>)"
     say "Repacking from $from (newest in dist/)."
 fi
+# Both to an absolute path: the check at the end extracts the package from a scratch directory,
+# where a relative --out names nothing (it fails there as "the runtime did not find its
+# filesystem", which is not what happened).
+absolute() {
+    case $1 in
+        /*) echo "$1" ;;
+        *) echo "$PWD/$1" ;;
+    esac
+}
+from=$(absolute "$from")
+out=$(absolute "$out")
 [[ -f $from ]] || die "no such AppImage: $from"
 [[ -e $out && $force != 1 ]] && die "$out exists (--force replaces it)"
 
