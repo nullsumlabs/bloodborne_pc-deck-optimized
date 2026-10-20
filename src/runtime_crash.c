@@ -153,6 +153,12 @@ void runtime_crash_init(void) {
     hput_env("BB_GUEST_IN_PLACE");
     hput_env("BB_UFFD");
     hput_env("BB_WRITE_LOG");
+    /* The diagnostics that say who wrote into the game's memory and how its labels were ordered:
+     * a 0x263b8e7 report without them cannot name the writer (docs/history/SESSION_2026-10-20.md). */
+    hput_env("BB_FREE_CHECK");
+    hput_env("BB_LABEL_TRAP");
+    hput_env("BB_DRAW_PIPE");
+    hput_env("BB_PIPE_SIGNALS");
     hput_env("BB_FRAME_STATS");
     hput_env("BB_ONLINE");
     /* The kernel, once: a driver or kernel change is part of the story of a crash weeks later. */
