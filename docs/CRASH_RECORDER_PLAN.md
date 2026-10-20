@@ -46,10 +46,35 @@ The ring is a fixed 32768 entries of 32 bytes (1 MiB), touched once at startup.
 | Ring memory | 1 MiB, touched once at init (the note path takes no page fault) |
 | Heap sample | 2 guest calls + a few loads every 30 s, from the pad sampler thread (already runs) |
 | Disk | **zero** during play; one `open` + writes at crash time |
+| stderr, at crash time | two lines: the report's path and the fault line |
 | Off | one cached-boolean branch per note call |
 
 Measured on the Deck once implemented: `frames.csv` p50/p99 unchanged within noise, and
 `/proc/<pid>/io` `write_bytes` not growing over a 10-minute soak.
+
+## Where a crash leaves its evidence
+
+- **The report file**, `$BB_CRASH_LOG` (`$BB_DATA_DIR/logs/crash-<start>.txt`). Opened only when
+  the game dies, so a session that does not crash leaves none.
+- **Two lines on stderr**, which is what the launcher's log page and its *Экспорт журнала* button
+  show and save:
+
+  ```
+  crash report: /home/deck/.local/share/bbport/logs/crash-20261019_053814.txt
+    Guest fault (signal 11) at guest offset 0x2199310, address 0x8
+  ```
+
+  The rest of the report stays in the file: stderr sees the path and the one line that names the
+  death. (Before this, a crash read as a bare `code 139` in the log, because the whole report went
+  to the file and the log page keeps only the last 5000 lines.)
+- **The exit status**, which distinguishes the two ways to die: the port's handlers leave with
+  `_exit(128 + signal)` — `139` for `SIGSEGV`, `142` for `SIGALRM` from the watchdog — while a child
+  *killed by a signal* shows up in the launcher as `-1` (GLib: `get_if_exited()` is false). `139`
+  therefore means the recorder ran and wrote its file; `-1` means the process died before it could,
+  i.e. the fault was in a handler or on a thread without one.
+- **The exported log** carries the report: the launcher appends `crash-*.txt` files newer than this
+  run's start under a `===== <path> =====` line, so one file has both the console tail and the
+  black box.
 
 ## Steps
 
@@ -69,7 +94,8 @@ Measured on the Deck once implemented: `frames.csv` p50/p99 unchanged within noi
       pointer if it leads into the image as well (pointers are labelled with their guest offset).
       Reads use `process_vm_readv`, so a bad pointer cannot fault again.
 - [x] **4. All-thread stacks into the report.** `probe.c`'s `dump_frames` takes an fd; the
-      `SIGUSR2` dumper and the watchdog write to the same file.
+      `SIGUSR2` dumper and the watchdog write to the same file. `runtime_crash_begin` also writes
+      the path and the fault line to stderr, so the console log alone names the report.
 - [x] **5. `probe.c` wiring.** `runtime_crash_init()` at the top of `main`, image base right after
       the image is mapped, `runtime_crash_begin/end` from `fault()` and the watchdog, after
       `bbgpu_handle_fault`, the recovery `siglongjmp` and `bbgpu_dump_guest_writes`.
@@ -110,7 +136,8 @@ recorder on without a variable being set anywhere.
 ## Verified here (this machine, no game)
 
 `bash build.sh --test` builds the port and runs every test, including `out/crash-test`, which
-crashes on purpose four times (`BB_CRASH_REPORT=1` twice, `=0` once) and reads the files back.
+crashes on purpose four times (`BB_CRASH_REPORT=1` twice, `=0` once), reads the files back, and
+checks that the crashing child's stderr names the report and the fault line but holds nothing else.
 A hand-run with the report path set produces (excerpt):
 
 ```

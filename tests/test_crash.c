@@ -9,6 +9,7 @@
 #define _GNU_SOURCE
 #include "runtime_crash.h"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,7 @@
 
 static volatile uint64_t guest[8];
 static const char *report_path;
+static const char *stderr_path; /* the crashing child's stderr: what the console log gets */
 
 static void record_events(void) {
     static const uint64_t callers[3] = {0x1122334, 0x2233445, 0x3344556};
@@ -57,6 +59,13 @@ static void crash_on_null(void) {
 static int child(int which) {
     setenv("BB_CRASH_REPORT", which == 3 ? "0" : "1", 1);
     setenv("BB_CRASH_LOG", report_path, 1);
+    if (stderr_path && which != 1) {
+        const int fd = open(stderr_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd >= 0) {
+            dup2(fd, 2);
+            close(fd);
+        }
+    }
     runtime_crash_init();
     record_events();
     if (which == 1) return 0; /* nothing is written while the game runs */
@@ -112,6 +121,10 @@ int main(void) {
     close(fd);
     unlink(path);
     report_path = path;
+    char noise[] = "/tmp/bbport-crash-test-XXXXXX";
+    const int noise_fd = mkstemp(noise);
+    if (noise_fd >= 0) close(noise_fd);
+    stderr_path = noise;
 
     /* Playing without a crash writes nothing. */
     {
@@ -161,6 +174,28 @@ int main(void) {
     expect(text, "\nEND\n");
     unlink(path);
 
+    /* The console log (and the launcher's export of it) keeps the path and the fault line, but not
+     * the report: the game's output is what a player sends when there is no file at hand. */
+    {
+        FILE *f = fopen(stderr_path, "r");
+        static char line[2048];
+        size_t n = f ? fread(line, 1, sizeof line - 1, f) : 0;
+        if (f) fclose(f);
+        line[n] = 0;
+        if (!strstr(line, report_path)) {
+            fprintf(stderr, "crash test: stderr does not name the report\n");
+            failed = 1;
+        }
+        if (!strstr(line, "test fault")) {
+            fprintf(stderr, "crash test: stderr does not give the fault line\n");
+            failed = 1;
+        }
+        if (n >= sizeof line - 1 || strstr(line, "guest memory at the fault")) {
+            fprintf(stderr, "crash test: stderr got the report itself, not just its name\n");
+            failed = 1;
+        }
+    }
+
     /* BB_CRASH_REPORT=0 writes no file, even on a crash. */
     if (!died_of_fault(run_child(3))) {
         fprintf(stderr, "crash test: the third child did not die as expected\n");
@@ -170,6 +205,7 @@ int main(void) {
         fprintf(stderr, "crash test: BB_CRASH_REPORT=0 wrote a report anyway\n");
         return 1;
     }
+    unlink(stderr_path);
     if (failed) return 1;
     puts("crash test: ok");
     return 0;

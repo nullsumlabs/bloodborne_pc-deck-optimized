@@ -40,6 +40,10 @@ DATA_DIR = Path(os.environ.get("BB_DATA_DIR", PORT_DIR))
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "bbport-launcher"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 MAX_LOG_LINES = 5000
+# The crash recorder's report (run.sh: BB_CRASH_LOG, docs/CRASH_RECORDER_PLAN.md). The log page
+# keeps the last MAX_LOG_LINES lines, so a long session loses the start-up line that names it;
+# the export adds the file itself when this run wrote one.
+CRASH_LOG_DIR = "logs"
 # The memory model (run.sh: BB_PC_MODEL): "auto" leaves it to the GPU (the new one on AMD, the
 # 0.3 one elsewhere), or either by hand. The new one goes through the layer's memory module on
 # every GPU (no sparse binding of the game's memory; BB_LAYER_MEMORY=0: AMD's sparse arena).
@@ -1311,8 +1315,42 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.get_clipboard().set(self.log_text())
         self.toasts.add_toast(Adw.Toast(title=tr("Журнал скопирован")))
 
-    def on_export_log(self, _button):
+    def crash_report(self):
+        """The recorder's report written since this game was started, or None.
+
+        The report only exists if the game died (BB_CRASH_REPORT, on by default; nothing is
+        written while playing), so a clean session exports the log alone.
+        """
+        started = getattr(self, "game_started", None)
+        if not started:
+            return None
+        newest = None
+        for path in (DATA_DIR / CRASH_LOG_DIR).glob("crash-*.txt"):
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                continue
+            if modified >= started and (newest is None or modified > newest[0]):
+                newest = (modified, path)
+        return newest[1] if newest else None
+
+    def export_log_text(self):
+        """What the export writes: the log, plus this run's crash report when the game died.
+
+        The report is the part of a crash the console log cannot hold: keep the two in one file so
+        the exported log alone is enough to read the death.
+        """
         text = self.log_text()
+        report = self.crash_report()
+        if report is not None:
+            try:
+                text += (f"\n===== {report} =====\n"
+                         + report.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+        return text
+
+    def on_export_log(self, _button):
         dialog = Gtk.FileDialog(title=tr("Экспорт журнала"))
         dialog.set_initial_name(f"bbport-{time.strftime('%Y%m%d_%H%M%S')}.log")
 
@@ -1324,7 +1362,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             if not chosen or not chosen.get_path():
                 return
             try:
-                Path(chosen.get_path()).write_text(text, encoding="utf-8")
+                Path(chosen.get_path()).write_text(self.export_log_text(), encoding="utf-8")
             except OSError as error:
                 self.toasts.add_toast(Adw.Toast(
                     title=tr("Не удалось сохранить журнал: {}").format(error.strerror or error)))
@@ -1383,6 +1421,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         except GLib.Error as error:
             self.toasts.add_toast(Adw.Toast(title=tr("Не удалось запустить: {}").format(error.message)))
             return
+        # For the log export: a crash report older than this run is not this run's.
+        self.game_started = time.time()
         self.stream = Gio.DataInputStream.new(self.process.get_stdout_pipe())
         self.read_line()
         self.process.wait_async(None, self.on_exit)

@@ -487,6 +487,21 @@ int runtime_crash_begin(int sig, uintptr_t address, void *context, const char *f
         const int fd = open(path_buf, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
         if (fd >= 0) out_fd = fd;
     }
+    if (out_fd != 2) {
+        /* One line on stderr as well: the console log, and the launcher's export of it, then name
+         * the report and where the game died, instead of ending in a bare exit status. The whole
+         * report stays in the file (stderr only sees this). */
+        static const char lead[] = "\ncrash report: ";
+        static const char indent[] = "  ";
+        ssize_t written_ = write(2, lead, sizeof lead - 1);
+        written_ = write(2, path_buf, strlen(path_buf));
+        written_ = write(2, "\n", 1);
+        if (fault_line && *fault_line) {
+            written_ = write(2, indent, sizeof indent - 1);
+            written_ = write(2, fault_line, strlen(fault_line));
+        }
+        (void)written_;
+    }
     out_put(header, header_len);
     put("\nFAULT signal=");
     put_dec((uint64_t)sig);

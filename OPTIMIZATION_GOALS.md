@@ -67,8 +67,10 @@ The newest frame times in this file are still the 2026-10-16 Deck profiles behin
 - **Untouched plans:** items 3, 5, 6, 7, 10; item 8's active occlusion path is still not
   established; item 9 is on the roadmap.
 - **One new per-frame cost to account for:** the crash recorder, on by default in flightrec —
-  ~24 ns a note, no syscall, no allocation, a 1 MiB ring, zero disk writes while playing, but the
-  frame-time half of its budget (`frames.csv` p50/p99 with it on) is unmeasured, so it belongs in
+  ~24 ns a note, no syscall, no allocation, a 1 MiB ring, zero disk writes while playing. The
+  2026-10-19 flightrec session (the crash log in `bbwork/logs`) shows no visible cost: `0 recorder
+  syncs` in all 220 five-second blocks and p99 22–28 ms throughout, at 50 FPS. That is an
+  observation without an off run, so the A/B (`frames.csv` p50/p99 with it on) still belongs in
   the same Deck run as item 11's frames.
 
 ## 1. Image-source copies for the guest `3d5ebf4e` memcpy
