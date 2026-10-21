@@ -149,12 +149,16 @@ rm -rf "$share/tools/fsr4cap/__pycache__"
 install -m755 "$root/out/bb-probe" "$share/bin/bb-probe"
 install -m755 "$root/out/bb-gpu-capabilities" "$share/bin/bb-gpu-capabilities"
 install -m755 "$root/out/gpu/libbbgpu.so" "$share/bin/gpu/libbbgpu.so"
-# The online module and the DLSS bridge only when this build has them; the reference package has
-# neither. No stripping either: it carries the debug info (libbbgpu.so is 152 MB of the 189 MB of
-# libraries) and crash reports are read with those symbols.
-if [[ -f $root/out/gpu/libbbnet.so ]]; then
-    install -m755 "$root/out/gpu/libbbnet.so" "$share/bin/gpu/libbbnet.so"
-fi
+# The online module and the DLSS bridge only when this build has them. 0.6 ships two online
+# modules — libbbnet20.so (shadPS4 0.20's network, the default) and libbbnet.so (the former
+# shadp2p one, BB_NET_GEN=19) — and run.sh looks for them side by side in bin/gpu/. No stripping
+# either: the library carries the debug info (libbbgpu.so is most of the package's) and crash
+# reports are read with those symbols.
+for module in libbbnet20.so libbbnet.so; do
+    if [[ -f $root/out/gpu/$module ]]; then
+        install -m755 "$root/out/gpu/$module" "$share/bin/gpu/$module"
+    fi
+done
 if [[ -f $root/out/libbbport_dlss.so ]]; then
     install -m755 "$root/out/libbbport_dlss.so" "$share/bin/libbbport_dlss.so"
     for ngx in "$root"/out/libnvidia-ngx-dlss.so.*; do
