@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bloodborne
+Comment=Native Bloodborne port launcher
+Exec=bbport
+Icon=bbport
+Categories=Game;
+X-AppImage-Version=0.51
