@@ -9,6 +9,9 @@
 /* The user folder add-ons are listed from (runtime_file.c in the game): a temporary one here. */
 static char user_dir[64]="/tmp/bbport-content-test-XXXXXX";
 const char *runtime_file_user_dir(void) { return user_dir; }
+/* 0.6 mounts an add-on's folder through the file runtime, which this test does not link: the
+ * listing and info calls below are what it checks, so the mount is accepted and does nothing. */
+int runtime_file_mount(const char *guest, const char *host) { (void)guest; (void)host; return 0; }
 typedef int32_t (ABI *Module)(uint16_t);
 typedef int32_t (ABI *Init)(const void *,void *);
 typedef int32_t (ABI *Param)(uint32_t,int32_t *);
