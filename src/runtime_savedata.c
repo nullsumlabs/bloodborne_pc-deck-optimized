@@ -286,7 +286,19 @@ static ABI int32_t save_search(const SearchCond *cond, SearchResult *result) {
         size_t n=strlen(e->d_name);
         if (e->d_name[0]=='.' || n>=32 || (n>8 && !strcmp(e->d_name+n-8,".sce_sys"))) continue;
         if (cond->dir && cond->dir->data[0] && !like(e->d_name,cond->dir->data)) continue;
-        if (count==capacity) { capacity=capacity ? capacity*2 : 16; entries=realloc(entries,capacity*sizeof(*entries)); }
+        /* The list has no fixed bound (a save folder can hold many entries): stop at a failed
+         * growth with what was read instead of writing through a null pointer. */
+        if (count==capacity) {
+            size_t grown=capacity ? capacity*2 : 16;
+            Entry *grown_entries=realloc(entries,grown*sizeof(*entries));
+            if (!grown_entries) {
+                static unsigned notes;
+                if (__atomic_fetch_add(&notes,1,__ATOMIC_RELAXED)<4)
+                    fprintf(stderr,"Runtime: save search stopped at %zu entries: no room for %zu more\n",count,grown-capacity);
+                break;
+            }
+            entries=grown_entries; capacity=grown;
+        }
         snprintf(entries[count].name,32,"%s",e->d_name);
         char meta[680]; snprintf(meta,sizeof(meta),"%s/%s.sce_sys",base,e->d_name);
         read_param(meta,&entries[count].param);
