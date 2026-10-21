@@ -305,7 +305,13 @@ target_link_libraries(fsr4-bench PRIVATE ffx-vulkan::fsr4-v07-vulkan ffx-vulkan:
 # BB_NET=OFF leaves it out. Without it the port plays offline.
 option(BB_NET "Build the online module (shadNet)" ON)
 if (BB_NET)
+    # CONFIG first (nix, and protobuf built from source). Debian and Ubuntu ship the headers,
+    # protoc and pkg-config files but no protobuf-config.cmake, so CONFIG alone leaves the online
+    # module out on those hosts with only "missing: Protobuf" to explain it.
     find_package(Protobuf CONFIG QUIET)
+    if (NOT Protobuf_FOUND)
+        find_package(Protobuf MODULE QUIET)
+    endif()
     find_package(nlohmann_json CONFIG QUIET)
     find_package(OpenSSL QUIET)
     find_package(ZLIB QUIET)
