@@ -78,6 +78,7 @@ liblzma.so.5
 liblzo2.so.2
 libmbedcrypto.so.7
 libmd.so.0
+libminiupnpc.so.17
 libmount.so.1
 libmp3lame.so.0
 libmpg123.so.0
@@ -97,6 +98,7 @@ libpcre2-8.so.0
 libpgm-5.3.so.0
 libpixman-1.so.0
 libpng16.so.16
+libprotobuf.so.32
 libpsl.so.5
 librabbitmq.so.4
 librav1e.so.0
