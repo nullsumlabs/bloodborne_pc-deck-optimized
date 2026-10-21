@@ -60,7 +60,14 @@ there, so reproduce the load-time stall and the `DEVICE_LOST` blit on the Deck f
   `:231-234` is the comment that says so. A feature, not a crash fix — the remaining long-session
   VRAM growth.
 - **Red-zone-safe stores** (607 sites, `patches/redzone.json`): absent, and this repo has no such
-  site list.
+  site list — deliberately. The fork's `protect_red_zones` docstring limits the hazard to Windows:
+  "Where Windows saves extended state in the compact XSAVE layout (Intel 12th gen and later), an
+  exception's frame holds the AVX registers up to 0x28 bytes below rsp, over the System V red zone
+  where leaf functions keep live locals (PS4 and Linux leave those 128 bytes alone)." Linux's
+  `get_sigframe` steps `sp` down past the 128-byte red zone before writing the frame, so a signal at
+  a store the GPU tracker write-protected cannot overwrite the writer's red-zone locals. Do not add
+  the JSON or the `link()` hook here; our own guest hooks take the 128 bytes explicitly
+  (`GuestRedZoneBytes`, `gpu/shim/bbport_guest_code_hooks.cpp:32,145`).
 - **`BB_GC_PRESSURE_PERCENT`**: superseded by the budget-derived marks above.
 - **Empty recording chunk**: handled — `CurrentChunk()` creates one on demand
   (`gpu/render/scheduler.h:469`).
