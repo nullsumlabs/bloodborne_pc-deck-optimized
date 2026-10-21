@@ -1,13 +1,16 @@
-# Crash fixes — status on `deck-0.6`
+# Crash fixes — status on `deck-0.6-crashfixes`
 
 Copied from `master` (where it tracked the `awakechan-fixes` port into the 0.51 tree) and rewritten
-for this branch. Source-level only: nothing here was built or run on `deck-0.6`.
+for `deck-0.6`; the fixes it asked for landed on `deck-0.6-crashfixes`, which branches from it.
+Every commit below was built (`bash build.sh --test`) and ran the Python suite (131 tests) on this
+branch before it was committed. Not run in the game: no `eboot.bin` here.
 
 ## Where the work is
 
 | Branch | Tree | Crash work on it |
 |---|---|---|
-| `deck-0.6` (here) | 0.6 GPU tree (`gpu/render`, `gpu/textures`, `gpu/gcn`, `gpu/cp`) | none of the seven ports; no crash recorder |
+| `deck-0.6` | 0.6 GPU tree (`gpu/render`, `gpu/textures`, `gpu/gcn`, `gpu/cp`) | none of the seven ports; no crash recorder |
+| `deck-0.6-crashfixes` (here) | `deck-0.6` | four of the seven (`a7ced51`, `ab93072`, `5601d6c`, `abc77f2`), the free-check page walk (`2254306`) |
 | `master` | 0.51 (`gpu/shadps4`) + the seven ports + `nocrash-optimizations` | all seven fixes |
 | `crash-logger-build` | `master` | crash recorder (`src/runtime_crash.c`, `tests/test_crash.c`, `run.sh`), free-check page walking `9c0838f`, 0.5 perf fixes `0a5442d`/`d1038c7` |
 
@@ -23,19 +26,26 @@ The seven ports are one commit each, so any one can be read alone: `441ca25`, `9
   format (`gpu/gcn/formats.h:282-293`, the comment names #166). `docs/CHANGES_0.6.md:132` lists
   #144/#165/#166.
 
-**Needs porting** (0.6 has the pre-fix 0.51 code at each of these points; `master` has the fix)
+**Ported here** (0.6 had the pre-fix 0.51 code at each of these points)
 
-- `9d4cd1a` unknown sysctl: `exit(21)` at `src/runtime_kernel.c:254-257`; should be `ENOENT`, with
-  the mib logged.
-- `87f54ad` audio: `src/runtime_ajm.c:317-319` mallocs the sum of the input sizes and copies into it
-  unchecked. Bound it (64 MiB) and return `INVALID_PARAMETER`.
-- `032d784` save list: `src/runtime_savedata.c:289` grows its entry list with an unchecked `realloc`.
-- `f9b2fb2` oversized record data: `ReserveRecordData` asserts `bytes + 1024 <= 128 KiB`
-  (`gpu/render/scheduler.h:282`), then `RecordData` memcpys into a null `Allocate`
-  (`:299-300`; `gpu/render/record_chunk.h:59-67` returns null when full).
+- `9d4cd1a` unknown sysctl → `a7ced51`: an unknown mib returns `ENOENT` instead of `exit(21)`, with
+  the mib logged the first eight times.
+- `87f54ad` audio → `ab93072`: the join of a job's inputs is bounded at 64 MiB; on failure the job
+  reports `INVALID_PARAMETER` with no input instead of writing through a null pointer.
+- `032d784` save list → `5601d6c`: `save_search` stops at a failed `realloc` with what it read.
+- `f9b2fb2` oversized record data → `abc77f2`: a payload over `RecordChunk::Capacity` lives in a
+  block of its own, owned and reused by the chunk; nothing is dropped and the chunk's own space is
+  unchanged. A failed allocation or a payload beyond 16 MiB is still a named stop.
+  Checked in a harness under ASan/UBSan: in-chunk, oversized, alignment, reuse after `Execute`, two
+  spills not overlapping, a full chunk spilling, the 16 MiB ceiling.
 
-**Mostly obsolete — re-check before porting**
+**Not taken**
 
+- GC retention (the fork's "used in the last N submissions" rule and the free delay): left out, and
+  only worth adding opt-in — no 0.51 hang has been reproduced on 0.6, and the existing budget-derived
+  marks have not been shown to fail.
+- Crash recorder (`crash-logger-build`): a diagnostic, not a fix, and it changes the startup path;
+  keep it on its own branch until a report is wanted from players.
 - `ca3cab0` out-of-order flip. The flip now runs in CP order, after the writes before it, through
   `RunInOrder` (`gpu/cp/cp_graphics.cpp:320-324`) — the fix's intent. The assert remains at
   `gpu/platform/videoout/videoout.cpp:394`, so a bounded wait still matters only if a CPU-written
@@ -51,8 +61,9 @@ touch the LRU (`gpu/textures/texture_cache.cpp:110-111`); deletion waits for GPU
 (`gpu/textures/texture_cache_track.cpp:168-192`).
 
 Missing are the fork's "used in the last N submissions" rule (`BB_GC_RECENT_FRAMES`, 48) and its
-`BB_IMAGE_FREE_DELAY_FRAMES` (32) free delay. Nothing in the 0.6 code shows the 0.51 hang is still
-there, so reproduce the load-time stall and the `DEVICE_LOST` blit on the Deck first.
+`BB_IMAGE_FREE_DELAY_FRAMES` (32) free delay — left out on purpose (see "Not taken"). If the
+load-time stall or the `DEVICE_LOST` blit turns up on the Deck, reproduce it first, then add them
+opt-in and compare.
 
 ## Left over from the fork's list
 
@@ -73,14 +84,14 @@ there, so reproduce the load-time stall and the `DEVICE_LOST` blit on the Deck f
   (`gpu/render/scheduler.h:469`).
 - **A fault at the end of a GPU mapping**: not re-compared with the fork.
 
-## Our own work not on this branch
+## Our own work
 
 - **Crash recorder** (`crash-logger-build`): `src/runtime_crash.c`, `tests/test_crash.c`, and `run.sh`
   naming the report before the game starts. 0.6's `src/probe.c` has the `SIGSEGV`/`SIGBUS` handler,
   backtrace and watchdog, but no recorder.
-- **Free-check page walking** (`9c0838f`, on `crash-logger-build` only): the fix walks only the
-  pages being written to and drops them after 30 s idle (1164 lines). Here — and on `master` — it is
-  the 1090-line pre-fix version, which sweeps every page ever seen.
+- **Free-check page walking** (`9c0838f`, on `crash-logger-build`): ported as `2254306` — only the
+  pages being written to are walked first, the rest round-robin a slice at a time, and a page idle
+  for 30 s is dropped. Its session log stayed on `crash-logger-build`.
 - **`0a5442d`, `d1038c7`** (0.5 perf fixes, `crash-logger-build` only): they patch
   `gpu/shadps4/...`, which 0.6 replaced — re-express rather than port.
 
