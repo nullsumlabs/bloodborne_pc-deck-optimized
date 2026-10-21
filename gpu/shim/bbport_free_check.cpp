@@ -18,6 +18,7 @@
 #include <csignal>
 #include <ucontext.h>
 #include <unordered_set>
+#include <vector>
 #include <sys/uio.h>
 #include <unistd.h>
 
@@ -25,6 +26,7 @@ namespace BbFreeCheck {
 namespace {
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
+using usize = std::size_t;
 
 // The game's small-object pool (allocation at guest offset 0x263b8b0, release at 0x263b9b0).
 constexpr u64 PageSize = 0x1000;
@@ -130,32 +132,8 @@ void Record(u64 address, u64 size, u64 value, Source source, u64 seq) {
         Entry{address, size, value, NowNs(), seq, u32(source), Tid()};
 }
 
-// Pool pages the watcher walks: an open-addressing set, insert-only.
-std::array<std::atomic<u64>, 1 << 14> pages{};
+// Pool pages the watcher is walking now (it owns the set; the number is for the reports).
 std::atomic<u32> page_count{0};
-
-void Watch(u64 page) {
-    static thread_local u64 last = 0;
-    if (page == last) {
-        return;
-    }
-    last = page;
-    u64 slot = (page >> 12) * 0x9E3779B97F4A7C15ull >> 50;
-    for (u32 probe = 0; probe < 64; ++probe, slot = (slot + 1) % pages.size()) {
-        u64 expected = pages[slot].load(std::memory_order_relaxed);
-        if (expected == page) {
-            return;
-        }
-        if (expected == 0) {
-            if (pages[slot].compare_exchange_strong(expected, page) || expected == page) {
-                if (expected != page) {
-                    page_count.fetch_add(1, std::memory_order_relaxed);
-                }
-                return;
-            }
-        }
-    }
-}
 
 std::atomic<u64> checked{0};
 std::atomic<u64> free_hits{0};
@@ -280,14 +258,35 @@ bool ReadPage(u64 page, unsigned char* out) {
 struct Track {
     bool valid = false;
     u64 free[2]{};
+    u64 last_ns = 0; ///< last emulator write into the page, or last free list change
     std::array<u64, MaxBlocks> allocated_at{}, freed_at{};
 };
+
+/// Pages are walked every millisecond while something happens in them: the emulation wrote into
+/// them since the last sweep, or their free list changed. A session lasts hours and every pool
+/// page ever written to would otherwise be read a thousand times a second (measured: 200 pages
+/// = half a core, 4000 = a saturated thread that then lags its own 1 ms cadence). A page with
+/// neither for IdleNs is dropped; the next emulator write into it brings it back, with a fresh
+/// baseline. Label blocks always get such a write (their fence), so the pool the crash is in
+/// stays watched while it is used.
+constexpr u64 IdleNs = 30ull * 1000000000ull;
+constexpr u32 HotPerSweep = 128;   ///< pages waiting from recent writes, per millisecond
+/// Tracked pages with no recent activity are walked round-robin, a slice at a time, so that the
+/// whole set is covered about every ColdSweeps milliseconds whatever its size.
+constexpr usize ColdSweeps = 500;
+constexpr usize PendingMax = 4096; ///< pages carried over when a sweep cannot keep up
 
 void Watcher() {
     pthread_setname_np(pthread_self(), "bbFreeCheck");
     std::array<u64, 256> reported{};
     u32 reported_next = 0;
     std::unordered_map<u64, Track> tracks;
+    std::vector<u64> pending, cold;
+    usize cold_next = 0;
+    // From the start of the log, not from now: the writes Check() made before this thread was
+    // scheduled are in the ring too, and one of them may be the first write into a page.
+    u64 last_ring = 0;
+    u64 sweeps = 0, sweep_ns = 0;
     alignas(64) unsigned char buf[PageSize];
     const auto walk_page = [&](u64 page, Header& h, WalkResult& r) {
         if (!ReadPage(page, buf)) {
@@ -304,38 +303,23 @@ void Watcher() {
         });
         return true;
     };
-    for (;;) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        static u64 last_report = 0, last_l20 = 0, last_l50 = 0, last_dup = 0;
-        if (const u64 now = NowNs(); now - last_report > 10000000000ull) {
-            const u64 l20 = late_20ms.load(), l50 = late_50ms.load(), dup = duplicates.load();
-            if (last_report) {
-                std::fprintf(stderr,
-                             "Free check: fences in 10 s: %llu over 20 ms, %llu over 50 ms, %llu "
-                             "written twice (max latency so far %.1f ms)\n",
-                             (unsigned long long)(l20 - last_l20),
-                             (unsigned long long)(l50 - last_l50),
-                             (unsigned long long)(dup - last_dup), max_latency_ns.load() / 1e6);
-            }
-            last_report = now;
-            last_l20 = l20;
-            last_l50 = l50;
-            last_dup = dup;
+    /// One tracked page: the free list walk, and the report when it is damaged.
+    const auto consider = [&](u64 page, bool active) {
+        Header h;
+        WalkResult r;
+        if (!walk_page(page, h, r)) {
+            tracks.erase(page);
+            return;
         }
-        for (auto& slot : pages) {
-            const u64 page = slot.load(std::memory_order_relaxed);
-            if (page == 0) {
-                continue;
+        const u64 now = NowNs();
+        if (r.ok) {
+            Track& t = tracks[page];
+            bool changed = !t.valid;
+            for (u64 i = 0; i < MaxBlocks && !changed; ++i) {
+                changed = IsFree(t.free, i) != IsFree(r.free, i);
             }
-            Header h;
-            WalkResult r;
-            if (!walk_page(page, h, r)) {
-                tracks.erase(page);
-                continue;
-            }
-            if (r.ok) {
-                const u64 now = NowNs();
-                Track& t = tracks[page];
+            if (changed) {
+                t.last_ns = now;
                 for (u64 i = 0; i < MaxBlocks; ++i) {
                     const bool was = IsFree(t.free, i), is = IsFree(r.free, i);
                     if (t.valid && was != is) {
@@ -345,8 +329,12 @@ void Watcher() {
                 t.free[0] = r.free[0];
                 t.free[1] = r.free[1];
                 t.valid = true;
-                continue;
+            } else if (active) {
+                t.last_ns = now;
             }
+            return;
+        }
+        {
             // The game may be inside an allocation or release: the same damage three times
             // over ~1 ms is not a race with it.
             bool persistent = true;
@@ -358,18 +346,21 @@ void Watcher() {
                              r2.value == r.value;
             }
             if (!persistent) {
-                continue;
+                return;
             }
+        }
+        {
+            const u64 now2 = NowNs();
             const u64 key = r.holder ^ (r.value * 0x9E3779B97F4A7C15ull);
             if (std::find(reported.begin(), reported.end(), key) != reported.end()) {
-                continue;
+                return;
             }
             reported[reported_next++ % reported.size()] = key;
             corruptions.fetch_add(1, std::memory_order_relaxed);
             if (!corruption_reports.Take()) {
-                continue;
+                return;
             }
-            const u64 now = NowNs();
+            const u64 now = now2;
             std::fprintf(stderr,
                          "Free check: CORRUPTED free list in pool page %#llx at %.3f s: "
                          "%#llx holds %#llx (%u of %llu free blocks walked; header next %#llx "
@@ -403,6 +394,94 @@ void Watcher() {
                                  "%llu\n",
                          (unsigned long long)unordered.load());
         }
+    };
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const u64 sweep_start = NowNs();
+        static u64 last_report = 0, last_l20 = 0, last_l50 = 0, last_dup = 0, last_evict = 0;
+        if (const u64 now = sweep_start; now - last_report > 10000000000ull) {
+            const u64 l20 = late_20ms.load(), l50 = late_50ms.load(), dup = duplicates.load();
+            if (last_report) {
+                std::fprintf(stderr,
+                             "Free check: fences in 10 s: %llu over 20 ms, %llu over 50 ms, %llu "
+                             "written twice (max latency so far %.1f ms); %zu pages tracked, "
+                             "sweep %.1f us\n",
+                             (unsigned long long)(l20 - last_l20),
+                             (unsigned long long)(l50 - last_l50),
+                             (unsigned long long)(dup - last_dup), max_latency_ns.load() / 1e6,
+                             tracks.size(), sweeps ? double(sweep_ns) / double(sweeps) / 1e3 : 0.0);
+            }
+            last_report = now;
+            last_l20 = l20;
+            last_l50 = l50;
+            last_dup = dup;
+            sweeps = 0;
+            sweep_ns = 0;
+        }
+        // The pages the emulation wrote into since the last sweep are the ones a bad write can
+        // land in right now: they are walked first, and such a write is what keeps a page
+        // watched. More than HotPerSweep of them in one millisecond are carried to the next
+        // sweep, so no page that was written is skipped. Writes larger than the pool page and its
+        // neighbours (downloads of megabytes) are not watched here: Check() tests those writes
+        // anyway, and a label write is 8 bytes.
+        const u64 head = ring_head.load(std::memory_order_relaxed);
+        const u64 oldest = head > ring.size() ? head - ring.size() : 0;
+        for (u64 i = std::max(last_ring, oldest); i != head; ++i) {
+            const Entry e = ring[i % ring.size()];
+            if (e.size == 0 || e.size > PageSize) {
+                continue;
+            }
+            pending.push_back(e.address & ~(PageSize - 1));
+        }
+        last_ring = head;
+        if (!pending.empty()) {
+            std::sort(pending.begin(), pending.end());
+            pending.erase(std::unique(pending.begin(), pending.end()), pending.end());
+            if (pending.size() > PendingMax) {
+                pending.erase(pending.begin(), pending.end() - PendingMax);
+            }
+            const usize walk = std::min<usize>(HotPerSweep, pending.size());
+            for (usize i = 0; i < walk; ++i) {
+                consider(pending[i], true);
+            }
+            pending.erase(pending.begin(), pending.begin() + walk);
+        }
+        // The rest, a slice at a time: a page idle for a while is still looked at (~60 times a
+        // second with a thousand of them), it just cannot develop a corruption the emulation
+        // caused without being hot again.
+        if (cold_next >= cold.size()) {
+            cold.clear();
+            cold.reserve(tracks.size());
+            for (const auto& entry : tracks) {
+                cold.push_back(entry.first);
+            }
+            cold_next = 0;
+        }
+        const usize cold_slice = std::max<usize>(1, cold.size() / ColdSweeps);
+        for (usize i = 0; i < cold_slice && cold_next < cold.size(); ++i) {
+            const u64 page = cold[cold_next++];
+            if (tracks.count(page)) {
+                consider(page, false);
+            }
+        }
+        const u64 now = NowNs();
+        if (last_evict == 0) {
+            last_evict = now;
+        } else if (now - last_evict > 1000000000ull) {
+            last_evict = now;
+            for (auto it = tracks.begin(); it != tracks.end();) {
+                if (now - it->second.last_ns > IdleNs) {
+                    it = tracks.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            cold.clear(); // the round-robin list names dropped pages now
+            cold_next = 0;
+            page_count.store(u32(tracks.size()), std::memory_order_relaxed);
+        }
+        ++sweeps;
+        sweep_ns += NowNs() - sweep_start;
     }
 }
 
@@ -417,15 +496,11 @@ void StartWatcher() {
 }
 
 /// One page of a write: report a write into a free block or the header.
-void CheckPage(u64 page, u64 begin, u64 end, u64 value, u64 size, Source source, u64 seq,
-               bool small) {
+void CheckPage(u64 page, u64 begin, u64 end, u64 value, u64 size, Source source, u64 seq) {
     Header h;
     std::memcpy(&h, reinterpret_cast<const void*>(page + HeaderOffset), sizeof(h));
     if (!Plausible(page, h)) {
         return;
-    }
-    if (small) {
-        Watch(page);
     }
     Record(begin, end - begin, value, source, seq);
     const auto report = [&](const char* what, u64 block) {
@@ -594,11 +669,10 @@ void Check(u64 address, u64 size, const void* data, Source source, u64 seq) {
             }
         }
     }
-    const bool small = size <= 64;
     const u64 end = address + size;
     for (u64 page = address & ~(PageSize - 1); page < end; page += PageSize) {
         CheckPage(page, std::max(address, page), std::min(end, page + PageSize), value, size,
-                  source, seq, small);
+                  source, seq);
     }
 }
 
