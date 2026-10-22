@@ -240,7 +240,9 @@ pads without a touch surface. The port's settings menu remains Insert / L3+R3.
 
 With the *Restore Debug Camera* patch the mouse turns the free camera. The game's occlusion
 queries are Vulkan occlusion queries in the default model (`BB_OCCLUSION_QUERIES=0`: everything
-counts as visible, as in the old model).
+counts as visible, as in the old model), and their results are written before a GPU label only
+where the game has been seen to read labels (`BB_OCCLUSION_LABEL_ORDER=1`: before every label,
+the behaviour until now; `=0`: never).
 
 **Upscaler assets** (not included; FSR 3.1 needs none):
 

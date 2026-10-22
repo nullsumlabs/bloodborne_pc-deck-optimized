@@ -26,6 +26,7 @@
 #include "common/types.h"
 #include "vulkan/vk_common.h"
 #include "render/scheduler.h"
+#include "render/vk_occlusion_labels.h"
 
 namespace VideoCore {
 class BufferCache;
@@ -46,11 +47,13 @@ public:
     /// thread, in stream order).
     void Event(VAddr address, u32 pairs);
 
-    /// Before a label (an end-of-pipe write the CPU may poll): the events recorded before it are
-    /// written first, as on the PS4, where the counters land in stream order ahead of later
-    /// labels. Ends the render pass when one is open (copies and dispatches are outside them).
-    /// BB_OCCLUSION_LABEL_ORDER=0: labels may go ahead (statistics only).
-    void WriteBeforeLabel();
+    /// Before a label at `address` (an end-of-pipe write the CPU may poll): the events recorded
+    /// before it are written first, as on the PS4, where the counters land in stream order ahead
+    /// of later labels. Ends the render pass when one is open (copies and dispatches are outside
+    /// them), which is why only the labels the game reads are ordered (LabelPolls): the others
+    /// leave their results to the next boundary. BB_OCCLUSION_LABEL_ORDER=0: labels may go ahead
+    /// (statistics only), 1: before every label.
+    void WriteBeforeLabel(VAddr address);
 
     /// Events so far (BB_PM4_SELFTEST and the frame stats).
     u64 Events() const noexcept {
@@ -109,6 +112,7 @@ private:
     vk::UniqueDescriptorSetLayout set_layout;
     vk::UniquePipelineLayout pipeline_layout;
     vk::UniquePipeline pipeline;
+    LabelPolls label_polls{LabelPolls::ModeFromEnv()};
     std::vector<Pending> pending;
     u32 pass_scale = 256;                   ///< the current pass's sample factor, 8.8 fixed point
     std::array<u32, NumSlots> slot_scale{}; ///< per query slot: its pass's factor
@@ -120,7 +124,10 @@ private:
     bool total_cleared = false;
     u64 events = 0;
     u64 starved = 0; ///< segments not begun in a render pass for want of a reset slot
-    u64 labels_ahead = 0, labels_ahead_in_pass = 0; ///< statistics (NoteLabel)
+    u64 labels_ahead = 0, labels_ahead_in_pass = 0; ///< statistics (WriteBeforeLabel)
+    /// Labels whose results were left to the next boundary, and the pages the game was seen to
+    /// read (LabelPolls) when it happened: what the optimization is worth on a run.
+    u64 labels_skipped = 0, labels_skipped_in_pass = 0;
     /// Statistics: counters the game reused (a new event at the address) while the GPU had not yet
     /// written their previous results (the game saw them not ready), of all reuses.
     std::unordered_map<u64, u64> written_at; ///< counter address -> tick of the resolve writing it

@@ -302,7 +302,7 @@ bool Rasterizer::WriteLabelOnGpu(VAddr address, u64 value, u32 num_bytes) {
     }();
     (void)announced;
     if (occlusion) {
-        occlusion->WriteBeforeLabel(); // the occlusion results before it (stream order)
+        occlusion->WriteBeforeLabel(address); // the occlusion results before it (stream order)
     }
     if (!marker) {
         // Core Vulkan transfer commands are forbidden inside a render pass. Preserve command

@@ -92,6 +92,20 @@ OcclusionQueries::OcclusionQueries(const Instance& instance_, Scheduler& schedul
     device.destroyShaderModule(module);
     std::printf("GPU: the game's occlusion queries are Vulkan occlusion queries (%s counts)\n",
                 instance.IsOcclusionQueryPrecise() ? "exact" : "approximate");
+    // Only the labels the game reads need the results written ahead of them (LabelPolls).
+    switch (label_polls.GetMode()) {
+    case LabelPolls::Mode::Every:
+        std::printf("GPU: occlusion results before every label (BB_OCCLUSION_LABEL_ORDER=1)\n");
+        break;
+    case LabelPolls::Mode::Never:
+        std::printf("GPU: occlusion results not ordered against labels "
+                    "(BB_OCCLUSION_LABEL_ORDER=0)\n");
+        break;
+    case LabelPolls::Mode::Polled:
+        std::printf("GPU: occlusion results before the labels the game reads only "
+                    "(BB_OCCLUSION_LABEL_ORDER=1: every label)\n");
+        break;
+    }
 }
 
 OcclusionQueries::~OcclusionQueries() {
@@ -234,24 +248,35 @@ void OcclusionQueries::Resolve() {
     pending.clear();
 }
 
-void OcclusionQueries::WriteBeforeLabel() {
+void OcclusionQueries::WriteBeforeLabel(VAddr address) {
     std::scoped_lock lk{mutex};
     if (pending.empty()) {
         return;
     }
     const bool in_pass = scheduler.IsRendering();
     ++(in_pass ? labels_ahead_in_pass : labels_ahead);
+    bool watch = false;
+    bool write;
+    {
+        // the fault handler learns pages here too (Touched)
+        std::scoped_lock watching{watch_mutex};
+        write = label_polls.ShouldWrite(address, watch);
+        if (watch) {
+            // Its first CPU access says whether the game reads labels here: one trap per page.
+            BbLayer::WriteTraps::Set(address & ~VAddr{4095}, 4096,
+                                     BbLayer::WriteTraps::QueryReads, true);
+        }
+    }
+    if (!write) {
+        // Nobody has been seen reading this page: the results can wait for the next boundary
+        // instead of ending the pass and resolving here.
+        ++(in_pass ? labels_skipped_in_pass : labels_skipped);
+        return;
+    }
     // A label ahead of results not written yet would let the CPU see the label before them. (Once
     // taken for the cause of slow launches; that was volatile blocks' refresh copies breaking
     // render passes, BufferCache::LayerVolatileAllowed. The game reads its results 2-10 ms after
     // the event and finds them written either way: BB_OCCLUSION_READ_TRACE.)
-    static const bool ordered = [] {
-        const char* env = std::getenv("BB_OCCLUSION_LABEL_ORDER");
-        return !env || env[0] != '0';
-    }();
-    if (!ordered) {
-        return;
-    }
     scheduler.EndRendering();
     if (active) {
         EndSegment();
@@ -364,18 +389,29 @@ void OcclusionQueries::Event(VAddr address, u32 pairs) {
     static u64 reported = 0;
     if (const auto now = std::chrono::steady_clock::now();
         BbStats::enabled && now - last_report >= std::chrono::seconds(5)) {
+        size_t pages_read, pages_watched;
+        {
+            std::scoped_lock lk{watch_mutex};
+            pages_read = label_polls.PolledPages();
+            pages_watched = label_polls.WatchedPages();
+        }
         std::printf("Occlusion queries: %llu events in %.0f s, %llu in all; %llu segments, "
                     "%llu not counted; labels after unwritten events: %llu (%llu in a render "
                     "pass); counters reused before their results were written: %llu of %llu; queries "
-                    "read: %llu none passed, %llu some passed, %llu not valid\n",
+                    "read: %llu none passed, %llu some passed, %llu not valid; label results left "
+                    "to the next boundary: %llu (%llu in a render pass), pages read by the game "
+                    "%zu of %zu watched\n",
                     (unsigned long long)(events - reported),
                     std::chrono::duration<double>(now - last_report).count(),
                     (unsigned long long)events, (unsigned long long)begun,
                     (unsigned long long)starved, (unsigned long long)(labels_ahead + labels_ahead_in_pass),
                     (unsigned long long)labels_ahead_in_pass, (unsigned long long)reused_late,
                     (unsigned long long)reused, (unsigned long long)queries_hidden,
-                    (unsigned long long)queries_passed, (unsigned long long)queries_invalid);
+                    (unsigned long long)queries_passed, (unsigned long long)queries_invalid,
+                    (unsigned long long)(labels_skipped + labels_skipped_in_pass),
+                    (unsigned long long)labels_skipped_in_pass, pages_read, pages_watched);
         labels_ahead = labels_ahead_in_pass = 0;
+        labels_skipped = labels_skipped_in_pass = 0;
         reused = reused_late = 0;
         queries_hidden = queries_passed = queries_invalid = 0;
         last_report = now;
@@ -419,6 +455,8 @@ bool OcclusionQueries::OnAccess(VAddr address, u64 rip, bool write, bool gpu_thr
     const u64 page = address & ~u64{4095};
     const auto now = std::chrono::steady_clock::now();
     std::scoped_lock lk{watch_mutex};
+    // A page with a label on it was accessed: the game reads labels there (LabelPolls).
+    label_polls.Touched(address);
     if (const auto it = watched.find(page); it != watched.end()) {
         ++accesses;
         accesses_by_port += gpu_thread;
