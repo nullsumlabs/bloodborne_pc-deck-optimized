@@ -3,7 +3,7 @@
 Optimisations worth doing that are **not** quality reductions (no preset, resolution or upscaler
 downgrades). First compiled 2026-10-15; this version rewritten **2026-10-21** for
 `deck-0.6-crashfixes` (0.6's own renderer: `gpu/render`, `gpu/textures`, `gpu/gcn`, `gpu/cp`), and
-checked line by line against that tree. Every item below is a measurement that still stands, a
+checked line by line against that tree, with §1 ported and §4 implemented on **2026-10-22**. Every item below is a measurement that still stands, a
 missing piece of code, or a knob that has not been swept.
 
 Sources: [parallel_gpu.md](docs/parallel_gpu.md) (the CPU profile's design notes),
@@ -22,9 +22,11 @@ Three kinds of number appear here, and each is labelled where used.
 | **Desktop** | The project's A/Bs on an RX 7800 XT, some with `taskset -c 0-3,8-11` as a 4c/8t stand-in | Sound for direction, not for magnitude on Deck |
 | **Extrapolation** | A desktop figure converted to Deck, or a share of one stage turned into a share of a frame | Weakest; always spelled out, never a promise |
 
-The newest Deck numbers in this file are still **2026-10-16**. Nothing on 0.6's renderer has been
-A/B'd on Deck, and the 0.6 AppImage has not been played. That is the gap this file's order is
-built around.
+The newest Deck *numbers* in this file are still **2026-10-16**. Nothing on 0.6's renderer has been
+A/B'd on Deck. The `-march=znver2` 0.6 AppImage (`dist/Bloodborne-bbport-0.6-znver2.AppImage`) was
+played on Deck on 2026-10-22 — reported smoother than before, with no frame times sent — and the
+build with §1 and §4 in it (`dist/Bloodborne-bbport-0.6-znver2-occlusion.AppImage`) is the one whose
+logs this file's §1 / §4 checks are waiting for. That is the gap this file's order is built around.
 
 New on 2026-10-21, and the only measurement in here taken on neither a Deck nor the project's
 7800 XT: a standalone CPU benchmark of the port's hot loop shapes, built twice
@@ -68,7 +70,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported here 2026-10-22** (experiment bit 33, on by default); Deck A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
 | 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
-| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the largest unbounded item | Small to measure | **Both in and on**; the A/B is one env var. **Best remaining item (2026-10-22)**, see the order below |
+| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the pass breaks the label ordering caused are now mostly gone by design | Small to measure | **Both in and on; label ordering narrowed 2026-10-22** (on by default, `BB_OCCLUSION_LABEL_ORDER=1` puts back the old ordering); Deck logs + the `queries read` A/B still to run |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
 | 7 | Sweep the recording knobs that already exist | CPU | Unmeasured; +18% was the desktop stand-in | Small | Built: `BB_VK_RECORD_THREADS`, `BB_VK_SEGMENT_KB`, `BB_ASYNC_SUBMIT` |
@@ -85,7 +87,8 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
   `gpu/render/scheduler.cpp:96`), async submit (`BB_ASYNC_SUBMIT`, default on), async pipeline
   compilation (`BB_ASYNC_PIPELINES`, default on, `gpu/render/pipeline_cache.cpp:765`), occlusion
   queries (`BB_OCCLUSION_QUERIES`, default on) with predication implemented in the command
-  processor (`gpu/cp/cp_graphics.cpp:378`), the two-stage draw pipeline, and the new memory model
+  processor (`gpu/cp/cp_graphics.cpp:378`), the two-stage draw pipeline, occlusion results ordered
+  only before the labels the game reads (`LabelPolls`, §4), and the new memory model
   on every GPU (0.6: Yharnam 4.30 vs 4.60 ms a frame, Oedon Chapel 234 vs 213 FPS on a 7800 XT).
 - **Built, never A/B'd on Deck:** the segmented recorder (§7) and the HLE copy detector (§2's
   measured part).
@@ -216,38 +219,73 @@ register-file equality across the stages (`gpu/render/raster_pipe.cpp:49`); `fra
 
 ## 4. Occlusion queries and predication: settle the pair
 
-**The recommended next item (2026-10-22):** it is GPU-side, default-on only since 0.6, and never
-priced on Deck. `queries read: … none passed / some passed / not valid` in the five-second line is
-the decision: `none passed` in bulk means the counters really hide geometry and the queries earn
-their resolves; near-zero `none passed` means ~60 events a frame and a resolve per boundary buy
-nothing, and `BB_OCCLUSION_QUERIES=0` is free FPS. Either way the A/B is one env var.
+**Implemented 2026-10-22: a label ends the pass only where the game reads labels.** Before this,
+`WriteBeforeLabel` ran for *every* end-of-pipe label written by the GPU while queries were pending:
+`scheduler.EndRendering()`, an `endQuery`, `copyQueryPoolResults` with `eWait`, the resolve dispatch
+between two full `eAllCommands` barriers, `resetQueryPool`, and a new segment. A pass break stores
+and reloads every attachment (at 720p: 3.7 MB colour and as much depth), and with ~60 events and a
+few hundred labels a frame the flush was only ever needed for the labels the game polls — the
+ordering the PS4 gives, where a label ahead of the counters would let the game read them stale.
+GPU-side waits never needed it: the resolve and the label are in one stream.
+
+So the port now learns which labels those are. A page a label was written to is watched for its
+first CPU access (any read or write, any thread, one trap per page — `LabelPolls`,
+`gpu/render/vk_occlusion_labels.h`). Until that access its labels leave the results to the next
+boundary; from then on they are ordered as before, one pass break and one resolve each, exactly as
+many as the game reads. Past 256 watched pages a page cannot be watched any more and is ordered
+unasked, so a game whose labels are spread over more pages keeps the old behaviour rather than
+losing the order.
+
+**Flags.** Default: the pages the game reads. `BB_OCCLUSION_LABEL_ORDER=1`: before every label (the
+behaviour up to 2026-10-22). `=0`: never (statistics only, as it already meant). The startup line
+says which, next to the existing "occlusion queries are Vulkan occlusion queries" one.
+
+**What to read on the Deck run** (`BB_FRAME_STATS=1`, the five-second `Occlusion queries:` line,
+which now ends):
+
+```
+label results left to the next boundary: N (M in a render pass), pages read by the game P of Q watched
+```
+
+- **`M`** is what the change buys: each is a pass break and a resolve that did not happen. The line's
+  older `labels after unwritten events: k (j in a render pass)` is what still does — `j` on this
+  build should be a fraction of what it was.
+- **`P = 0`** with a large `M`: the game touches no page it was given a label on, so ordering buys
+  nothing anywhere and `BB_OCCLUSION_LABEL_ORDER=0` is free as well.
+- **`Q = 256`**: the cap was hit and the run fell back to ordering every label — not a measurement of
+  the change, raise `MaxWatched` before reading the next one.
+- **The A/B** is `BB_OCCLUSION_LABEL_ORDER=1` on the same spot: `frames.csv` p50/p99 and the
+  `BB_GPU_PROFILE` GPU ms. Pass breaks are GPU time (store/load), so a win shows there first.
 
 **The old version of this file was wrong.** It repeated 0.51's README ("synthetic pixel counters,
 `IT_SET_PREDICATION` unimplemented"). In this tree the game's ZPASS_DONE events are real Vulkan
-occlusion queries, on by default (`OcclusionTranslated`, `gpu/render/raster_signals.cpp:184`;
+occlusion queries, on by default (`OcclusionTranslated`, `gpu/render/raster_signals.cpp:185`;
 `BB_OCCLUSION_QUERIES=0` restores the fixed sequence), and predication is implemented in the command
 processor (`Op::SetPredication` and `PredicationSkips`, `gpu/cp/cp_graphics.cpp:378,406`). Samples
 are scaled to the game's resolution when a pass is drawn smaller
-(`OcclusionQueries::SetPassScale`), and events are summed by one resolve dispatch outside render
-passes (`gpu/render/vk_occlusion.cpp:156,230`).
+(`OcclusionQueries::SetPassScale`, `gpu/render/vk_occlusion.cpp:134`), and events are summed by one
+resolve dispatch outside render passes (`gpu/render/vk_occlusion.cpp:170`).
 
 **Why it still matters.** ~60 events a frame, each ending a query segment; a resolve dispatch per
 boundary; and the game's own draws are predicated on the results, so this is both cost and GPU
-culling. None of it has been priced on Deck. With the game's draws skipped where the counters say
-hidden, the GPU-side saving could be large; if nothing is actually hidden, it is ~60 events of CPU
-plus resolve dispatches and pass breaks for nothing.
+culling. The label ordering that used to add a pass break on top is now limited to the pages the
+game reads; what is left unpriced on Deck is the rest — the events, their segments and resolves, and
+whether the predicates cull. With the game's draws skipped where the counters say hidden, the GPU
+saving could be large; if nothing is hidden, it is ~60 events of CPU plus their resolves for nothing.
 
-**How to settle it.** One run, one env var: `BB_OCCLUSION_QUERIES=0` against the default, same
-spot, `frames.csv` p50/p99 and `BB_GPU_PROFILE` GPU ms. The five-second `Occlusion queries:` line
-(printed with `BB_FRAME_STATS`) already reports events, segments, labels written ahead of unwritten
-events, and "queries read: none passed / some passed / not valid" — read it before changing
-anything. `BB_PM4_SELFTEST=1` checks the event intervals; experiment bit 4 of the second
-`BB_TOGGLE_FILE` number is the in-run A/B.
+**The pair's other half is still open: do the queries pay at all?** The same five-second line's
+`queries read: N none passed, some passed, not valid` is the decision. `none passed` in bulk means
+the counters really hide geometry the game then does not draw, and the queries earn their segments;
+near-zero means ~60 events a frame, their segments and their resolves buy nothing, and
+`BB_OCCLUSION_QUERIES=0` is free FPS. One run, one env var, same spot, `frames.csv` p50/p99 and
+`BB_GPU_PROFILE` GPU ms. `BB_PM4_SELFTEST=1` checks the event intervals; experiment bit 4 of the
+second `BB_TOGGLE_FILE` number is the in-run A/B.
 
-**Then, if labels cost:** every label forces `WriteBeforeLabel` (pass break + resolve) when events
-are pending. `labels_ahead_in_pass` in that report says how often; only flushing before labels the
-guest actually polls would cut the pass breaks. That is a smaller, focused change — do it only if
-the counter is high.
+**Verify the change itself.** `occlusion-labels-test` (`ninja -C out/gpu occlusion-labels-test` then
+`out/gpu/occlusion-labels-test`) covers the policy: the three modes, one watch per page, a touch
+teaching a page, and the cap. In a run, the startup line names the mode and the five-second line the counts
+above; `BB_OCCLUSION_READ_TRACE=1` still reports when the game first reads its counters and whether
+they were there.
 
 ## 5. Guest copies off the GPU thread's critical path
 
@@ -394,6 +432,7 @@ All of these are env vars in this tree; one session each, same spot, `frames.csv
 | A/B | Env | What it prices |
 |---|---|---|
 | Occlusion queries | `BB_OCCLUSION_QUERIES=0` | §4: cost of queries and the culling they enable |
+| Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=1` | §4: the pass breaks the old ordering cost (`0` = order nothing at all) |
 | HLE compute copies | `BB_HLE_OFF=1` | §2: what the image-copy detector is worth now |
 | Draw pipeline | `BB_DRAW_PIPE=0` | The two-stage split itself, on Deck |
 | Recording | `BB_VK_RECORD_THREADS=1..3`, `BB_VK_SEGMENT_KB=16..128` | §7 |
@@ -467,11 +506,12 @@ against `frame_ms` in `frames.csv`, plus `stage B busy %` / `stage A waited %` f
 
 1. **The cheap A/Bs table** — one Deck session, and it decides between §1/§2/§4 (GPU) and
    §3/§5/§6 (CPU) on measurement rather than on this file's assumptions.
-2. **§4 — occlusion queries/predication, the most promising item left.** GPU-side, default-on only
-   since 0.6, never priced on Deck: ~60 events a frame, a resolve dispatch per boundary, a pass
-   break per label with events pending. Either the game's predicates cull draws and it is already
-   earned, or nothing is culled and `BB_OCCLUSION_QUERIES=0` (the 0.51 fixed sequence) is free FPS.
-   The A/B is one env var; acting on it is a default flip or a `WriteBeforeLabel` narrowing.
+2. **§4 — the label half is implemented (2026-10-22); its logs are the next thing to read.** The
+   pass break per label with events pending is gone for pages the game never touches, so the
+   five-second `Occlusion queries:` line's `N (M in a render pass)` and `pages read P of Q` decide
+   both whether that paid and whether the game reads labels at all. The remaining half is whether
+   the queries themselves pay: `queries read … none passed` in bulk, and `BB_OCCLUSION_QUERIES=0`
+   (the 0.51 fixed sequence) as the one-env-var A/B.
 3. **§2** — 1–2% of GPU time and a small detector extension, once a Deck trace names what declines
    the `704x1x1` class.
 4. **§11** — a build-flag sweep screened by the CPU benchmark; no rendering change, and the Haswell
