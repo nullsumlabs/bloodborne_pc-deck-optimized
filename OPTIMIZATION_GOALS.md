@@ -65,7 +65,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 
 | # | Goal | Side | Expected impact | Effort | State in this tree |
 |---|---|---|---|---|---|
-| 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Not here.** Built on `crash-logger-build` only; port it |
+| 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported here 2026-10-22** (experiment bit 33, on by default); Deck A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
 | 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; `ObtainBuffer` still runs in stage B |
 | 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the largest unbounded item | Small to measure | **Both in and on**; the A/B is one env var |
@@ -89,8 +89,8 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
   on every GPU (0.6: Yharnam 4.30 vs 4.60 ms a frame, Oedon Chapel 234 vs 213 FPS on a 7800 XT).
 - **Built, never A/B'd on Deck:** the segmented recorder (§7) and the HLE copy detector (§2's
   measured part).
-- **Not in this tree at all:** the no-target draw skip (§1, `crash-logger-build`), the crash
-  recorder (`src/runtime_crash.c`, same branch), and the fork's GC retention rules.
+- **Not in this tree at all:** the crash recorder (`src/runtime_crash.c`, same branch) and the
+  fork's GC retention rules.
 - **One diagnostic to keep in mind:** `BB_FRAME_STATS` now writes a per-frame CSV
   (`BB_FRAME_LOG`) whose columns are the ones to compare between builds —
   `t_s,frame_ms,present_wait_ms,tick_wait_ms,stage_a_cpu_ms,images,image_mb,buffer_mb,protect_ms,`
@@ -100,8 +100,26 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 
 ## 1. Skip draws with nothing to render into
 
-**Not in this tree.** `grep -r DrawUnobservable gpu` → nothing, and the toggle numbering below does
-not exist here either. It is on `crash-logger-build` / the flightrec package.
+**Ported 2026-10-22: on by default, needs the Deck A/B below.** `Rasterizer::DrawUnobservable`
+(`gpu/render/rasterizer.cpp`) runs in `Draw`/`DrawIndirect` right after the pipeline selection, so a
+dropped draw never becomes a packet: stage B does not see it and its register writes stay dirty for
+the next draw's packet. The test is the one below — `key.mrt_mask == 0`, no depth/stencil target
+(`depth_enable`/`stencil_enable` with a valid `depth_buffer`, the same expression
+`PrepareRenderState` uses), and no stage writing memory (`Shader::Info::buffers`/`images`, the
+port's own flatbuf/pagetable/fault buffer/clip planes excluded), with the pipeline named once by
+the kept path. Experiment bit 33 (`1ull<<33`, `EXPERIMENTS_ON_DEFAULT` in `src/runtime_memory.c`);
+`BB_TOGGLE_FILE` with `0 0` is the reference. One deliberate difference from the flightrec build:
+the old guard also kept every draw while occlusion queries were on, which here would disable the
+skip every frame (queries are on by default in 0.6). It is dropped instead: a ZPASS counter belongs
+to a depth block, and a pass with no depth target writes none on the PS4 either, so the segment
+this pass would open only counts samples the PS4 never counted.
+
+**Verify on Deck (not done here):** `no-target draws skipped N/frame` in `Frame stats` (≈10 in the
+heavy area, 0 with `0 0`), the `pass 16384x16384 []` labels gone from `BB_GPU_PROFILE`, and
+`frames.csv` plus screenshots on both sides.
+
+**What it was.** On `crash-logger-build`, from the 0.51 renderer; the description below is that
+build's.
 
 **What they are.** Both Deck logs carry two labels in most windows:
 
@@ -124,17 +142,6 @@ into", counted in `draws_empty`), so there is precedent on this game.
 the heaviest — **3–6% of a 17–23 ms Deck frame**, more than everything §2 had left. The 2026-10-17
 visual A/B was by eye only, which is what left it on by default; the `frames.csv` from that run was
 never read.
-
-**Porting it here.** The guard has to know the port's own buffers: the attachment test is easy
-(`key.mrt_mask` drives `state.num_color_attachments`, `db_desc` is set only with `depth_enable` or
-`stencil_enable`), but "writes no memory" is not — only guest buffers, image stores and atomics
-count, not the page table, fault buffer, flattened constants or clip planes. A dropped draw also
-skips `PostDraw`. Land it behind a new experiment bit (the second number in `BB_TOGGLE_FILE`, see
-`BbToggle::Experiment`) or a `BB_SKIP_EMPTY_DRAWS` env, and count what it drops in `Frame stats`.
-
-**Verify.** `no-target draws skipped N/frame` (≈10 in the heavy area, 0 without it); both
-`pass 16384x16384 []` labels gone from `BB_GPU_PROFILE`; `frames.csv` with the bit on and off in the
-same spot; screenshots identical.
 
 ## 2. The remaining emulated `3d5ebf4e` copy class
 

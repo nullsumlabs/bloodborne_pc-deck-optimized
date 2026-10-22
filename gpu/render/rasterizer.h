@@ -382,6 +382,9 @@ private:
 
     bool FilterDraw();
     bool FilterDrawPasses() const;
+    /// bbport (experiment bit 33): a draw with no color attachment and no depth target whose
+    /// stages write no memory — nothing it does can be observed (rasterizer.cpp).
+    bool DrawUnobservable(const GraphicsPipeline* pipeline) const;
     /// Parts of DrawRecord and DrawIndirectRecord: the upscaler's view of the draw, the push
     /// data scaled to the target drawn into, and the pipeline bind, dynamic state and render
     /// pass (`jitter_eligible`: not a full-screen pass).

@@ -257,7 +257,81 @@ std::pair<u32, u32> GetDrawOffsets(
     }
     return {vertex_offset, instance_offset};
 }
+
+// bbport (experiment bit 33, on by default: src/runtime_memory.c's EXPERIMENTS_ON_DEFAULT; a
+// second number in BB_TOGGLE_FILE replaces that both ways): draws with nothing to render into. A
+// draw whose pass has no color attachment and no depth target does something only if a stage
+// writes memory the guest can read afterwards — a buffer store of any kind, an image store or an
+// atomic. The old host skipped exactly these shapes (old-bbhost-nocrash/src/host/render.cpp:
+// "nothing to render into"), and with nothing attached the render area keeps the device's
+// 16384x16384 maximum: BB_GPU_PROFILE labels them "pass 16384x16384 [] depth - vs ... ps ...",
+// ~10 a frame at 0.2-0.6 ms of a Deck frame (0.6-1.2 ms), beside their cost on the recording
+// thread.
+constexpr u64 SkipNoTargetDraw = 1ull << 33;
+
+/// Whether this stage writes memory the guest could read back later. The port's own buffers are
+/// not the guest's: a stage reached through the page table or the fault buffer carries both as
+/// `is_written`, and treating those as the shader's own stores would keep every such draw.
+bool StageWritesMemory(const Shader::Info& info) {
+    const auto own_buffer = [](Shader::BufferType type) {
+        return type == Shader::BufferType::Flatbuf || type == Shader::BufferType::BdaPagetable ||
+               type == Shader::BufferType::FaultBuffer || type == Shader::BufferType::ClipPlanes;
+    };
+    for (const auto& buffer : info.buffers) {
+        if (buffer.is_written && !own_buffer(buffer.buffer_type)) {
+            return true;
+        }
+    }
+    for (const auto& image : info.images) {
+        if (image.is_written || image.is_atomic) {
+            return true;
+        }
+    }
+    return false;
+}
 } // namespace
+
+bool Rasterizer::DrawUnobservable(const GraphicsPipeline* pipeline) const {
+    if (!BbToggle::Experiment(SkipNoTargetDraw)) {
+        return false;
+    }
+    // Nothing is attached: the fragment stage exports no color target (the render state's
+    // attachment count is the mask's width) and no depth or stencil target is enabled and valid.
+    const auto& regs = Regs();
+    const bool depth = (regs.depth_control.depth_enable && regs.depth_buffer.DepthValid()) ||
+                       (regs.depth_control.stencil_enable && regs.depth_buffer.StencilValid());
+    if (pipeline->GetGraphicsKey().mrt_mask != 0 || depth) {
+        return false;
+    }
+    // No occlusion query keeps it: a ZPASS_DONE counter belongs to a depth block, and a pass with
+    // no depth target writes none on the PS4 either, so the segment this pass would open here
+    // counts samples the PS4 never counted (and the game never sees).
+    for (const Shader::Info* stage : pipeline->GetStages()) {
+        if (!stage || !StageWritesMemory(*stage)) {
+            continue;
+        }
+        // The guard kept this candidate, so a run that changes nothing names the reason instead of
+        // leaving it to a guess. Once per pipeline (they are cached per key), first eight.
+        static std::mutex kept_mutex;
+        static std::array<const GraphicsPipeline*, 8> kept{};
+        std::scoped_lock lock{kept_mutex};
+        u32 used = 0;
+        bool known = false;
+        while (used < kept.size() && kept[used] != nullptr) {
+            known |= kept[used] == pipeline;
+            ++used;
+        }
+        if (!known && used < kept.size()) {
+            kept[used] = pipeline;
+            const auto* fragment = pipeline->GetStages()[u32(Shader::SwStage::Fragment)];
+            std::printf("No-target draw kept: vs %016llx ps %016llx (a stage writes memory)\n",
+                        (unsigned long long)pipeline->GetStage(Shader::SwStage::Vertex).pgm_hash,
+                        (unsigned long long)(fragment ? fragment->pgm_hash : 0));
+        }
+        return false;
+    }
+    return true;
+}
 
 void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* prepared) {
     BB_SECTION(ADraw);
@@ -291,6 +365,16 @@ void Rasterizer::Draw(bool is_indexed, u32 index_offset, const PreparedDraw* pre
                              : DrawPreparation::OtherPrograms);
     }
     if (!pipeline) {
+        return;
+    }
+    // bbport: nothing to render into and no stage writing memory: the draw cannot be observed, so
+    // no pass is opened for it and nothing is recorded (its register writes stay dirty and go out
+    // with the next draw's packet, so stage B's copy of them is current).
+    if (DrawUnobservable(pipeline)) {
+        BbStats::no_target_draws.fetch_add(1, std::memory_order_relaxed);
+        BbStats::no_target_vertices.fetch_add(
+            u64(Regs().num_indices) * Regs().num_instances.NumInstances(),
+            std::memory_order_relaxed);
         return;
     }
     if (pipelined && FilterDrawPasses()) {
@@ -872,6 +956,11 @@ void Rasterizer::DrawIndirect(bool is_indexed, VAddr arg_address, u32 offset, u3
     };
     const GraphicsPipeline* pipeline = pipeline_cache.GetGraphicsPipeline(params, nullptr, true);
     if (!pipeline) {
+        return;
+    }
+    // bbport: as in Draw: an indirect draw with nothing to render into is not observable.
+    if (DrawUnobservable(pipeline)) {
+        BbStats::no_target_draws.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     const IndirectDraw indirect = {arg_address + offset, count_address, stride, max_count};
