@@ -7,6 +7,9 @@
 #
 #     bash build_steam_deck.sh && bash packaging/appimage-ubuntu.sh
 #     # -> dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage, Deck-only binaries
+#     bash build_steam_deck.sh && bash packaging/appimage.sh
+#     # -> dist/Bloodborne-bbport-x86_64.AppImage, deadinside28's nix-appimage recipe
+#     #    (docs/APPIMAGE_NIX_DECK.md)
 #
 # This file mirrors build.sh: when that one grows a compiler invocation, this one needs the same
 # line with "${deck[@]}" added.

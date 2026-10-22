@@ -307,6 +307,12 @@ the launcher's button (see above); they go to `~/.local/share/bbport/fsr4_411`
 (`BB_PACKAGE_FSR411=1` bundles a local `fsr4_411` into an AppImage for your own devices). On the Steam Deck pick the 1280×720 output (the
 game is 16:9; on the 1280×800 screen it gets thin bars).
 
+**Deck-tuned build of the same image:** `bash build_steam_deck.sh && bash packaging/appimage.sh`
+— their (deadinside28's) nix-appimage recipe with the port's binaries built for Zen 2
+(`-march=znver2`, which rules out Intel CPUs). What the package contains, and what was checked, is
+in [docs/APPIMAGE_NIX_DECK.md](docs/APPIMAGE_NIX_DECK.md). Fetch `fsr4_shaders` first on a fresh
+clone: `bash tools/fetch_fsr4_assets.sh`.
+
 **Adding the AppImage to Steam** (*Add a Non-Steam Game*) needs no options; the compatibility tool
 does not matter. (Steam preloads its overlay into every non-Steam game; the AppImage removes it
 before its own programs start, so the Steam overlay is not shown in the game.) Where Steam
