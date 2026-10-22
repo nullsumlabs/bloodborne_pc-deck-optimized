@@ -23,6 +23,7 @@
 
 #include "bbport_toggles.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/unique_function.h"
 #include "render/dynamic_state.h"
 #include "render/record_chunk.h"
@@ -279,7 +280,19 @@ public:
         if (!IsRecordingDeferred()) {
             return;
         }
-        ASSERT(bytes + 1024 <= RecordChunk::Capacity);
+        if (bytes + 1024 > RecordChunk::Capacity) {
+            // A payload a whole chunk cannot hold. Retiring the chunk cannot make room for it, so
+            // RecordChunk::Allocate keeps it in a block of its own and the draw carries on (before
+            // this the assert here stopped the game). Reported a few times: a draw that needs one
+            // keeps needing one, and the size says which draw.
+            static std::atomic<u32> reported{0};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 5) {
+                LOG_WARNING(Render, "record data of {} bytes does not fit a {}-byte chunk; keeping "
+                                    "it in a block of its own",
+                            bytes, RecordChunk::Capacity);
+            }
+            return;
+        }
         if (RecordChunk::Capacity - CurrentChunk().Size() < bytes + 1024) {
             RetireChunk();
         }
@@ -297,6 +310,9 @@ public:
         const size_t bytes = data.size_bytes();
         ReserveRecordData(bytes + alignof(T));
         auto* dst = static_cast<T*>(CurrentChunk().Allocate(bytes, alignof(T)));
+        // Only a failed allocation or an absurd size reaches this (see Allocate); name it rather
+        // than copy through a null pointer.
+        ASSERT_MSG(dst != nullptr, "cannot record {} bytes of record data", bytes);
         std::memcpy(dst, data.data(), bytes);
         return {dst, data.size()};
     }
