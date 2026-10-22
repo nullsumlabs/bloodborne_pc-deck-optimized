@@ -31,7 +31,10 @@ needed_dirs() {
 } > packaging/runtime-paths.nix
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-(cd "$work" && nix bundle --impure --bundler github:ralismark/nix-appimage \
+# `nix bundle` and the bundler's flake ref are experimental Nix features, off by default in a
+# stock nix.conf: enable them for this invocation only, so no system configuration is needed.
+(cd "$work" && nix --extra-experimental-features 'nix-command flakes' bundle --impure \
+    --bundler github:ralismark/nix-appimage \
     --expr "import $root/packaging {}")
 mkdir -p dist
 install -m755 "$work/bbport.AppImage" dist/Bloodborne-bbport-x86_64.AppImage
