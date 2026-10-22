@@ -67,7 +67,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 |---|---|---|---|---|---|
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported here 2026-10-22** (experiment bit 33, on by default); Deck A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
-| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; `ObtainBuffer` still runs in stage B |
+| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
 | 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the largest unbounded item | Small to measure | **Both in and on**; the A/B is one env var |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% measured ceiling (motion off); 3–6% realistic | Medium | Not started |
@@ -175,15 +175,40 @@ other binds); `BB_GPU_PROFILE=1` should show the `3d5ebf4e` dispatch label shrin
 the limiting stage, so handing a seventh of its work to the under-used stage is the best ratio
 available short of more recording threads.
 
-**State here.** Still open: `ObtainBuffer` is called from `BindResources` (stage B) in
-`gpu/render/raster_bind.cpp:566,656,893`. Stage A owns the register state and packs the draw; the
-buffer cache is shared, so the change is about where the binding commands are emitted, not
-ownership. The constant ring already does this for small read-only buffers
-(`vk_constant_ring.h`), which is the shape to copy.
+**State in 0.6 (checked 2026-10-22).** The 12%/11% are 0.51 numbers on a 7800 XT and have not been
+reproduced here; three things changed under them:
 
-**Estimated impact:** ≤12% of stage B, share of a stage. End-to-end roughly 2–6%: stage B's busy
-time is close to the frame in the CPU-bound case, but the seam between stages needs a barrier and
-stage A is not free.
+- the constant ring already hands small read-only buffers to stage A (`CollectRingBindings`,
+  `gpu/render/raster_pipe.cpp:296`: ≤16 KiB, read-only, not GPU-modified — unless
+  `BB_CONSTANTS_IN_PLACE=1`);
+- `ObtainBuffer` grew memo paths that return without doing work in the default in-place model
+  (`gpu/buffers/buffer_cache.cpp:1129`: the layer `BindMemo` hit, the in-place read memo);
+- vertex streams and the index buffer are resolved inside `BindResources` beside the texture helper
+  (`draw_inputs`/`EarlyDrawInputs`, `gpu/render/raster_bind.cpp:383`), so part of the old
+  `ObtainBuffer` time is already overlapped.
+
+What still runs on stage B per draw: `ObtainBuffer` for the vertex ranges
+(`gpu/render/raster_bind.cpp:566`), the index buffer (656) and every guest buffer the ring did not
+take (893), plus the barrier bookkeeping (`bound_buffers`, `runtime.AccessBuffer`) and the
+descriptor writes.
+
+**Not the same change as the ring.** The ring moves *data*, for bindings whose result is a copy it
+can make itself. The rest mutate the buffer cache — residency, `LayerBind`, uploads, shadow copies,
+GPU-write notes — and record commands on stage B's scheduler, so "binding on stage A" means stage A
+owning the buffer cache (what `docs/parallel_gpu.md` says), with the cache-coherency risk that
+produced the 2026-10-01 heap corruption.
+
+**Why it may not pay on Deck.** The Deck frame is GPU-bound, and the presenter keeps one frame in
+flight: stage-B CPU time below the frame time hides behind the GPU, so cutting it moves p99/hitches
+rather than average FPS. This is worth doing only if the measurement below puts buffer binding
+above the GPU's frame time.
+
+**Measure first, no code.** `BB_SECTIONS=1 BB_FRAME_STATS=1` prints `stage B us per packet:` with
+`bind`, `buffers`, `ObtainBuffer`, `vertex`, `index`, `textures` and the `A: *` stage-A parts
+(`gpu/render/raster_pipe.cpp:1029`), next to `stage B busy %` and `stage A waited %`. In the heavy
+area on Deck: a few percent for `ObtainBuffer`+`vertex`+`index` with stage B below the frame time
+ends this item (§2 and §4 are then the ones worth spending on); stage B above the frame time makes
+extending the ring pattern to the vertex/index ranges the cheapest half of it.
 
 **Verify.** `stage_a_cpu_ms` in the per-frame CSV and the `stage A waits over 0.5%: function:line
 N%` line printed with `BB_FRAME_STATS` (`gpu/render/raster_pipe.cpp:1114`); `BB_PIPE_VERIFY=N` for
