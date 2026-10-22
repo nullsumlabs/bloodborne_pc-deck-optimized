@@ -68,9 +68,9 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported here 2026-10-22** (experiment bit 33, on by default); Deck A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
 | 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
-| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the largest unbounded item | Small to measure | **Both in and on**; the A/B is one env var |
+| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the largest unbounded item | Small to measure | **Both in and on**; the A/B is one env var. **Best remaining item (2026-10-22)**, see the order below |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
-| 6 | Cheaper object motion vectors | CPU | 10% measured ceiling (motion off); 3–6% realistic | Medium | Not started |
+| 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
 | 7 | Sweep the recording knobs that already exist | CPU | Unmeasured; +18% was the desktop stand-in | Small | Built: `BB_VK_RECORD_THREADS`, `BB_VK_SEGMENT_KB`, `BB_ASYNC_SUBMIT` |
 | 8 | Scope `-fno-omit-frame-pointer` to the loader | CPU | ~0–1% | Small | Open (`gpu/CMakeLists.txt:12`) |
 | 9 | AOT shaders/pipelines; ship the port's pipeline cache | Both | ≈0 average FPS; removes traversal hitches | Medium | Preload on start exists; install-time compile does not |
@@ -216,6 +216,12 @@ register-file equality across the stages (`gpu/render/raster_pipe.cpp:49`); `fra
 
 ## 4. Occlusion queries and predication: settle the pair
 
+**The recommended next item (2026-10-22):** it is GPU-side, default-on only since 0.6, and never
+priced on Deck. `queries read: … none passed / some passed / not valid` in the five-second line is
+the decision: `none passed` in bulk means the counters really hide geometry and the queries earn
+their resolves; near-zero `none passed` means ~60 events a frame and a resolve per boundary buy
+nothing, and `BB_OCCLUSION_QUERIES=0` is free FPS. Either way the A/B is one env var.
+
 **The old version of this file was wrong.** It repeated 0.51's README ("synthetic pixel counters,
 `IT_SET_PREDICATION` unimplemented"). In this tree the game's ZPASS_DONE events are real Vulkan
 occlusion queries, on by default (`OcclusionTranslated`, `gpu/render/raster_signals.cpp:184`;
@@ -269,15 +275,36 @@ end of it.
 and motion pipeline variants. Motion vectors are required for temporal upscaling, so this is not a
 quality knob to drop.
 
-**How.** Reuse the previous frame's motion for draws whose pose buffer is unchanged (the pose hash
-and `Motion::IndexRangeCache` already exist in `gpu/upscale/motion_history.h:57`), or compute the
-vectors on the GPU. The setting and its env are already here (`object_motion`, `BB_OBJECT_MOTION`).
+**State in 0.6 (checked 2026-10-22): the plan this item proposed is already in.** The reuse of the
+previous frame's motion for an unchanged pose landed with the motion history:
 
-**Estimated impact:** 10% is the measured ceiling and a ceiling, not a target; recovering part of it
-for unchanged poses lands in the 3–6% range.
+- `Motion::History::Moving` (`gpu/upscale/motion_history.h`, the `GateKey`/`palette` pair) is the
+  pose hash: a small-skeleton/prop draw whose bone palette did not change skips the index scan and
+  `PrepareDraw` altogether (`gpu/render/rasterizer.cpp:620`), and its first changed frame stores
+  positions, the next loads them;
+- `Motion::IndexRangeCache` (`Revalidate = 32`) re-scans a static mesh's indices every 32nd frame at
+  most, which is where an earlier ~10% of the GPU thread went.
 
-**Verify.** `BB_DEBUG_MOTION`, the motion test targets (`motion-history-test`, `motion-shader-test`
-in `bash build.sh --test`), `frames.csv`.
+So the 10% quoted above is what was *left* after that work: ~0.28 µs per packet across
+`DrawRecord` (palette hashes, the gate and cache lookups, the motion pipeline variants). At the
+~1500–1800 draws this port records in a frame that is ~0.5 ms of stage B — **≈3% of a 17 ms Deck
+frame**, not 10%.
+
+**What is genuinely left, and why it is small.** Characters (`BufferRole::Skeleton`) are deliberately
+not gated (`gated = false`, `rasterizer.cpp:608`): their pose changes whenever they move, so the gate
+would only pay in menus and idle frames, not in a fight. What remains is the per-draw gate lookup,
+the `PrepareDraw` key, and the motion shader variants — all stage-B CPU time, which on a GPU-bound
+Deck hides behind the GPU (see §3). Dropping or trimming motion vectors is not an option: temporal
+upscaling needs them.
+
+**Measure before writing code.** `BB_SECTIONS=1 BB_FRAME_STATS=1` prints `motion` µs per packet
+beside `bind`/`textures`/`begin render` (`gpu/render/raster_pipe.cpp:1029`); `BB_OBJECT_MOTION=0` is
+the reference side and also shows how much of the frame is motion vectors at all. Expect
+single-digit on the Deck, and only in frames where stage B is the limiter.
+
+**Verify.** `BB_DEBUG_MOTION`; the motion test targets are `EXCLUDE_FROM_ALL`, so `bash build.sh
+--test` does not build them — `cmake --build out/gpu --target motion-history-test motion-shader-test`
+then run the two binaries in `out/gpu`; `frames.csv` for the A/B.
 
 ## 7. Sweep the recording knobs that already exist
 
@@ -422,15 +449,36 @@ Regressions to watch: the GPU-hang guard, the oversized-record-block path (`abc7
 that changes the shader `Info` layout or the pipeline cache key (both force a rebuild of every
 pipeline).
 
-## Suggested order
+## Which side can still move the frame rate
 
-1. **The cheap A/Bs table** — one Deck session, and it decides between §1/§4 (GPU) and §3/§5 (CPU)
-   on measurement rather than on this file's assumptions.
-2. **§1** — the largest measured win (3–6%) and the only one that is code-complete elsewhere.
-3. **§11** — a build-flag sweep screened by the CPU benchmark; it changes no rendering, and the
-   Haswell run already suggests the current `-mtune` is not free.
-4. **§4** — settle queries/predication with the same session's evidence.
-5. **§3 and §5** — the two that reduce stage B and the GPU thread's waits without the recorder
-   refactor; measure first, as §5's 13% is 0.51's number.
-6. **§7** — a sweep, not code.
-7. Everything else in the table order.
+Checked against the code on 2026-10-22. The Deck frame is GPU-bound and the presenter keeps one
+frame in flight, so stage-B CPU time below the frame time **hides behind the GPU**: shortening it
+lowers p99 and hitches, not average FPS. That splits the list cleanly.
+
+| Can raise FPS | Can only lower p99/hitches |
+|---|---|
+| §1 (done, ported 2026-10-22), §2, §4 | §3, §5, §6, §7, §8, §11 (CPU), §9 and §10 (hitches/memory) |
+
+Read it off one run, not off this table: `present_wait_ms` and `BB_GPU_PROFILE`'s GPU busy time
+against `frame_ms` in `frames.csv`, plus `stage B busy %` / `stage A waited %` from
+`BB_FRAME_STATS`. If GPU busy is at or near the frame time, only the left column can pay.
+
+## Suggested order (2026-10-22)
+
+1. **The cheap A/Bs table** — one Deck session, and it decides between §1/§2/§4 (GPU) and
+   §3/§5/§6 (CPU) on measurement rather than on this file's assumptions.
+2. **§4 — occlusion queries/predication, the most promising item left.** GPU-side, default-on only
+   since 0.6, never priced on Deck: ~60 events a frame, a resolve dispatch per boundary, a pass
+   break per label with events pending. Either the game's predicates cull draws and it is already
+   earned, or nothing is culled and `BB_OCCLUSION_QUERIES=0` (the 0.51 fixed sequence) is free FPS.
+   The A/B is one env var; acting on it is a default flip or a `WriteBeforeLabel` narrowing.
+3. **§2** — 1–2% of GPU time and a small detector extension, once a Deck trace names what declines
+   the `704x1x1` class.
+4. **§11** — a build-flag sweep screened by the CPU benchmark; no rendering change, and the Haswell
+   run already suggests the current `-mtune` is not free.
+5. **§6** only if the measurement puts stage B above the frame time — and then the gate and index
+   cache are already in, so expect ~3%, not the 10% the desktop number suggests.
+6. **§3 and §5** — the same rule: CPU time below the frame time is a p99 item, not an FPS item. §3
+   additionally needs stage A to own the buffer cache.
+7. **§7 and §8** — sweeps and a flag scope, not backlog.
+8. Everything else in the table order.
