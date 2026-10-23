@@ -1,9 +1,16 @@
 THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SHOULD BE SENT TO THE DISCORD SERVER https://discord.gg/KYZRKk9CB, NOT TO THE SHADPS4 SERVER.
 
 
-# bbport — a native Linux port of Bloodborne
+# bbport — Steam Deck optimization fork
 
 **English** · [Русский](README.ru.md)
+
+This is a fork of [deadinside28/bloodborne_pc](https://github.com/deadinside28/bloodborne_pc)
+(bbport, upstream 0.6) with one target: **Bloodborne v1.09 on the Steam Deck**. It is the **0.6.1**
+release: upstream 0.6 plus the build, packaging and crash-fix work below. Upstream builds
+the port; this fork changes how it is compiled, how it is packaged, and where its frame time goes
+on a 4-core RDNA2 handheld, and it carries the fork's crash fixes. Desktops still run it —
+`build.sh` stays portable — but the Deck is what is tuned, measured and packaged here.
 
 bbport is the counterpart of Wine + DXVK for a single game: *Bloodborne* for PlayStation 4
 (CUSA03173, game version 1.09) on an x86-64 Linux PC. The game's original executable runs
@@ -28,8 +35,81 @@ confirmed on NVIDIA and Intel (see below).
 
 **Status: experimental, playable.** The game boots, loads saves and plays (the Hunter's Dream
 and several areas of Yharnam were played with it) with sound, gamepad and saving.
-A full play-through has not been verified, and only one machine (Linux, AMD Radeon RX 7800 XT,
-Mesa/RADV) has been tested thoroughly.
+A full play-through has not been verified. Upstream's test machine is an AMD Radeon RX 7800 XT
+with Mesa/RADV; this fork is played on a Steam Deck (LCD, 720p output), which is where its
+changes come from and where they are still being measured.
+
+## What this fork adds
+
+| | Upstream | This fork |
+|---|---|---|
+| Target | Linux PC, generic x86-64 | Steam Deck: Zen 2, 4 cores / 8 threads, RDNA2 (8 CU), 16 GB LPDDR5 shared with the GPU, 1280×800 screen |
+| Build | `build.sh` | `build_steam_deck.sh`: `-march=znver2 -mtune=znver2` (`BB_DECK_MARCH`, `BB_DECK_MTUNE`), PGO from a profile in `pgo/` |
+| Package | Nix AppImage | Deck AppImages in `dist/`, built with `packaging/appimage-ubuntu.sh` or repacked with `packaging/appimage-repack.sh` |
+| Crash fixes | 0.6's own | 0.6's own, plus the fork's (below) |
+| Frame time | Generic tuning | Deck-first work: empty-target draws dropped, occlusion label ordering narrowed, a per-frame CSV to measure it |
+
+Already on by default here, because the Deck is what they were tuned for:
+
+- the two-stage draw pipeline (it turns itself on at 8+ hardware threads) and, on an 8-thread
+  CPU, two Vulkan recording threads, with async submit and async pipeline compilation;
+- HLE image copies for the game's compute copy shaders (`BB_HLE_OFF=1`: the game's shaders);
+- occlusion queries with predication, with their results ordered only before the labels the game
+  actually reads (`BB_OCCLUSION_LABEL_ORDER=1`: every label; `=0`: never);
+- draws with nothing to render into are dropped before they become packets (`BB_TOGGLE_FILE` with
+  `0 0` is the reference build);
+- at 720p the startup resolution patch is used — the fastest path, and the live resolution path
+  does not engage below 1080p anyway.
+
+`-march=znver2` enables instructions only AMD implements, so the Deck build does not run on Intel.
+`build.sh` stays the portable build for other machines.
+
+### Crash fixes
+
+On top of the fixes 0.6 itself brought (see below):
+
+- an unknown sysctl name returns `ENOENT` instead of ending the game;
+- an audio job whose inputs cannot be joined is bounded at 64 MiB and reports `INVALID_PARAMETER`
+  instead of writing through a null pointer;
+- the save list stops at a failed `realloc` with what it read;
+- render record data larger than a chunk gets a block of its own instead of stopping the game (a
+  failed allocation or a payload over 16 MiB is still a named stop);
+- the free check walks the pages being written to first, then the rest a slice at a time, and
+  drops pages idle for 30 s instead of walking the whole pool.
+
+### What 0.6 brought (upstream)
+
+The base this fork tracks, in short ([full list](docs/CHANGES_0.6.md)):
+
+- **The new memory model became the default on every GPU**, NVIDIA and Intel included: the game's
+  memory in system RAM, read by the GPU where it is, frequently read data in VRAM, freed when
+  unused. *Memory model → Old* (`BB_PC_MODEL=0`) keeps the 0.3 model.
+- **Online in two pools** on shadPS4 0.20's stack: Seamless Hunt (bells, summons, messages,
+  bloodstains, seamless co-op/BBSC for up to five hunters) and The Hunter's Dream.
+- **Any aspect ratio live** (4:3 to 32:9) and **frame rate through hooks instead of patches** —
+  above 30 FPS the game's main loop uses the real frame time; **F3** toggles a 30 FPS limit.
+- **Effects switch without a restart** (chromatic aberration, depth of field, motion blur, SSAO,
+  the game's AA, dynamic-light shadows).
+- **Mouse look, a mouse pointer in the game's menus, a Dark Souls III-like layout** and button
+  prompts for the device in use.
+- **The port's own code replaces shadPS4's** (except the online module): command processor, GCN
+  definitions, shader translator, renderer, caches, platform libraries.
+- **Fixes**: Laurence's cinematic and the render-resource pool above 30 FPS; frames shifted by half
+  the screen (occlusion compute pass overwriting push constants); `0xa0020007` debug exception;
+  `Bad PM4 packet` at save load (two threads writing one command buffer); the light-shaft FPS drop;
+  stale VRAM copies ("exploding" vertices); NVIDIA/Intel startup crashes and RIP=0 crashes; the
+  full GX command heap at `0x2199310`; a white picture after loading a save with FSR 4.1.1.
+- **Faster**: draw preparation uses more threads on 12+ hardware threads; buffer bindings through
+  the memory module cost 6% less on the draw-recording stage.
+
+### Deck numbers
+
+The 0.6 build for Zen 2 has been played on a Deck (reported smoother than 0.5), but there is no
+frame-time A/B of 0.6's renderer on Deck yet: each item above names the log or profile run that
+settles it, and those are still being collected. What is missing, what each goal is expected to
+be worth and how to measure it: [OPTIMIZATION_GOALS.md](OPTIMIZATION_GOALS.md). The fork's crash
+recorder and the GC retention rules of the earlier branch are not in this tree — see
+[CRASH_FIXES_STATUS.md](CRASH_FIXES_STATUS.md).
 
 ## Highlights
 
@@ -169,8 +249,8 @@ neither has nor includes.
 ## Build and run
 
 ```bash
-git clone --recursive https://github.com/deadinside28/bloodborne_pc.git bbport && cd bbport
-bash build.sh                        # builds out/bb-probe and out/gpu/libbbgpu.so
+git clone --recursive https://github.com/nullsumlabs/bloodborne_pc-deck-optimized.git bbport && cd bbport
+bash build_steam_deck.sh             # Deck: Zen 2 target; build.sh for other machines
 BB_GAME_DIR=/path/to/CUSA03173 bash run.sh
 ```
 
@@ -302,18 +382,23 @@ GPU has FP8 matrices (`VK_EXT_shader_float8`); the log says `Upscaler: FSR 4.1.1
 emulation of FP8 (`BB_FSR4CAP_FP8=1` records it there too, `fp8emu/`): bit-exact with the DLL;
 **not yet run on RDNA4 hardware.**
 
-**AppImage** (Steam Deck): `bash build.sh && bash packaging/appimage.sh` →
+**AppImage** (Steam Deck): `bash build_steam_deck.sh && bash packaging/appimage.sh` →
 `dist/Bloodborne-bbport-x86_64.AppImage`; data in `~/.local/share/bbport`, `--play` starts the
 game without the launcher window (Game Mode). FSR 4.1.1 models are not packaged: build them with
 the launcher's button (see above); they go to `~/.local/share/bbport/fsr4_411`
 (`BB_PACKAGE_FSR411=1` bundles a local `fsr4_411` into an AppImage for your own devices). On the Steam Deck pick the 1280×720 output (the
 game is 16:9; on the 1280×800 screen it gets thin bars).
 
-**Deck-tuned build of the same image:** `bash build_steam_deck.sh && bash packaging/appimage.sh`
-— their (deadinside28's) nix-appimage recipe with the port's binaries built for Zen 2
-(`-march=znver2`, which rules out Intel CPUs). What the package contains, and what was checked, is
-in [docs/APPIMAGE_NIX_DECK.md](docs/APPIMAGE_NIX_DECK.md). Fetch `fsr4_shaders` first on a fresh
-clone: `bash tools/fetch_fsr4_assets.sh`.
+**Deck builds:** `bash build_steam_deck.sh` compiles the port for Zen 2 (`-march=znver2
+-mtune=znver2`; `BB_DECK_MARCH`/`BB_DECK_MTUNE` change the target, `BB_PGO=generate` trains a
+profile on the Deck itself). Package it either with deadinside28's nix-appimage recipe
+(`bash packaging/appimage.sh` → `dist/Bloodborne-bbport-x86_64.AppImage`, contents in
+[docs/APPIMAGE_NIX_DECK.md](docs/APPIMAGE_NIX_DECK.md)) or with
+`bash packaging/appimage-ubuntu.sh` → `dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage`,
+which carries its own library set. `bash packaging/appimage-repack.sh` replaces only the port's
+files in a package that already ran, so a host without those ~150 libraries can still build one.
+The packages in `dist/` are made this way. Fetch `fsr4_shaders` first on a fresh clone:
+`bash tools/fetch_fsr4_assets.sh`.
 
 **Adding the AppImage to Steam** (*Add a Non-Steam Game*) needs no options; the compatibility tool
 does not matter. (Steam preloads its overlay into every non-Steam game; the AppImage removes it
@@ -355,7 +440,8 @@ When running from source, install MangoHud separately. A diagnostic launch with
 `VK_LOADER_LAYERS_DISABLE=~implicit~` also disables MangoHud.
 
 Useful variables: `BB_FRAME_STATS=1` (frame statistics, including a `Memory:` line: VRAM, GTT,
-RSS, images and guest blocks in VRAM), `BB_PC_MODEL=0` (the old memory model as in 0.3; the new
+RSS, images and guest blocks in VRAM), `BB_FRAME_LOG=path` (with `BB_FRAME_STATS`: one CSV line per
+flip — frame time, present and tick waits, stage A CPU, memory and guest copies), `BB_PC_MODEL=0` (the old memory model as in 0.3; the new
 one is the default), `BB_ANISO=N` (anisotropic filtering of scene textures; 16 by
 default, 0 = the game's own),
 `BB_GC_IDLE_SECONDS=N` / `BB_VRAM_IDLE_SECONDS=N` (how long unused textures / buffers stay in VRAM;
@@ -407,6 +493,7 @@ loaded; a build without it plays offline only.
 | `tools/` | Developer tools: scripted runs, A/B toggles, FSR benchmark helpers, FSR 4 shader rewrites, `fsr4cap` (FSR 4.1.1 recording/extraction) |
 | `tests/` | Loader, runtime, patch and renderer tests |
 | `docs/` | Design notes and measurements ([upscaler](docs/upscaler.md), [parallel GPU](docs/parallel_gpu.md), [motion vectors](docs/motion_vectors.md), [roadmap](docs/ROADMAP.md)) |
+| `dist/` | Deck AppImages and the Deck traces and logs the fork's goals are measured against (not in git) |
 
 Tests: `bash build.sh --test`, `python3 -m unittest discover -s tests`, and
 `ninja -C out/gpu motion-history-test ui-composition-test scene-resolution-test motion-shader-test settings-test`.
@@ -427,7 +514,8 @@ Tests: `bash build.sh --test`, `python3 -m unittest discover -s tests`, and
   fixed), reactive and transparency masks for particles and fog.
 - Fix the races in AMD's FSR 4.1.1 shaders at output widths that are not multiples of 64
   (e.g. 1600×900), as already done for the left-edge race in FSR 4 v07 at 1080p.
-- Steam Deck validation of the AppImage; HDR output.
+- Deck frame-time A/B of this tree, and validation of its packages on the Deck itself; HDR
+  output.
 
 ## Credits and licenses
 
