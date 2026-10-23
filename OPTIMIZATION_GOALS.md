@@ -73,7 +73,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 |---|---|---|---|---|---|
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported 2026-10-22, engaged on Deck 2026-10-23** (16–17 no-target draws a frame skipped); A/B with `0 0` still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
-| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end, **and stage B is 30–66% busy on Deck** so it is a p99 item | Medium | Planned, not started (§3 has the order of work); the stage-B gate is answered, the µs split is not |
+| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end, **and stage B runs at ~49% busy on Deck (never above 66%)** so it is a p99 item | Medium | Planned, not started (§3 has the order of work); the stage-B gate is answered, the µs split is not |
 | 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | 0.1 ms/frame at most from the label half; the queries' culling is real, its price unmeasured | Small to measure | **Both in and on; the narrowed label ordering (`=2`) is measured at 19% of the pass breaks it was built for (~0.1 ms/frame) and is now off by default (2026-10-23). What is left is the queries' own A/B** |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
@@ -230,8 +230,9 @@ ends this item (§2 and §4 are then the ones worth spending on); stage B above 
 extending the ring pattern to the vertex/index ranges the cheapest half of it.
 
 **That gate was answered on 2026-10-23, and it says no for FPS.** In the 8.7-minute run `stage B
-busy` was a median **48.8%** of the GPU thread's active time (30–66% across the windows), `stage A
-waited` 2.6–8.1%, and stage A 7.8 ms of an 18.4 ms frame. Stage B sits under half of a frame the GPU
+busy` was a median **48.8%** of the GPU thread's active time (p95 59.5%, never above 66.4%; the low
+end is menus and the geometry-free arena), `stage A waited` a median 1.4% (max 11.3%), and stage A
+7.8 ms of an 18.4 ms frame. Stage B sits under half of a frame the GPU
 owns, so moving its `ObtainBuffer`/`vertex`/`index` work to stage A cannot raise FPS on this build;
 it is a p99 item at best, and nothing in the run points at it as a p99 problem. `BB_SECTIONS` was
 off, so the split *inside* stage B is still unmeasured — that is step 1 below.
@@ -510,7 +511,7 @@ Experimental* page exists, the list is:
 |---|---|---|
 | Occlusion label ordering: skip the pass breaks nothing reads | `BB_OCCLUSION_LABEL_ORDER=2` | ~0.1 ms/frame, paid with ~5 protection traps a second in the game's own label pool (§4). Off by default, the only one measured on Deck |
 | Empty-target draw skip (§1) | bit 33 today; needs an env var (say `BB_EMPTY_DRAWS=0`) before it can be a switch | **On** by default: 16–17 draws a frame, 0.6–1.2 ms/frame as measured 2026-10-16. A switch here is for an A/B against the reference, not for shipping it off |
-| Buffer binding on stage A (§3) | none yet — build it behind experiment bit 34 | Would hand ~12% of stage B (0.51 desktop figure) to an idle stage A, for **p99/hitches only**: stage B is 30–66% busy on Deck. Not implemented |
+| Buffer binding on stage A (§3) | none yet — build it behind experiment bit 34 | Would hand ~12% of stage B (0.51 desktop figure) to an idle stage A, for **p99/hitches only**: stage B is ~49% busy (median) on Deck, never above 66%. Not implemented |
 | Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
 
 Everything else that is on by default stays out of that page: the HLE image copies, two recording
