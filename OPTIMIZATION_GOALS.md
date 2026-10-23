@@ -73,7 +73,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 |---|---|---|---|---|---|
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported 2026-10-22, engaged on Deck 2026-10-23** (16–17 no-target draws a frame skipped); A/B with `0 0` still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
-| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
+| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end, **and stage B is 30–66% busy on Deck** so it is a p99 item | Medium | Planned, not started (§3 has the order of work); the stage-B gate is answered, the µs split is not |
 | 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | 0.1 ms/frame at most from the label half; the queries' culling is real, its price unmeasured | Small to measure | **Both in and on; the narrowed label ordering (`=2`) is measured at 19% of the pass breaks it was built for (~0.1 ms/frame) and is now off by default (2026-10-23). What is left is the queries' own A/B** |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
@@ -121,6 +121,15 @@ the old guard also kept every draw while occlusion queries were on, which here w
 skip every frame (queries are on by default in 0.6). It is dropped instead: a ZPASS counter belongs
 to a depth block, and a pass with no depth target writes none on the PS4 either, so the segment
 this pass would open only counts samples the PS4 never counted.
+
+**It is already here, and it is the same one as on `nocrash-optimizations`.** That branch has it as
+`d1038c7`, in the 0.51 renderer (`gpu/shadps4/video_core/renderer_vulkan/vk_rasterizer.cpp` — the
+`old-bbhost-nocrash` "nothing to render into" this section started from), and 0.6's own renderer got
+the port as `708a6c9`: same bit 33, same criteria, the occlusion difference above, the counters in
+the same place. Nothing from the older branch is missing — `708a6c9` is an ancestor of this branch
+and the run below shows it firing 16–17 times a frame. The one thing it lacks for the launcher is an
+env var: today it is `BB_TOGGLE_FILE`'s second number (`0 0` is the reference), which a launcher
+switch cannot set per run.
 
 **Seen working on Deck 2026-10-23.** `no-target draws skipped` sits at **16–17/frame** in 85 of the long
 run's 104 windows, 13–18 through the rest of the game, 11 through a load and 1–2 on menus and the
@@ -219,6 +228,31 @@ above the GPU's frame time.
 area on Deck: a few percent for `ObtainBuffer`+`vertex`+`index` with stage B below the frame time
 ends this item (§2 and §4 are then the ones worth spending on); stage B above the frame time makes
 extending the ring pattern to the vertex/index ranges the cheapest half of it.
+
+**That gate was answered on 2026-10-23, and it says no for FPS.** In the 8.7-minute run `stage B
+busy` was a median **48.8%** of the GPU thread's active time (30–66% across the windows), `stage A
+waited` 2.6–8.1%, and stage A 7.8 ms of an 18.4 ms frame. Stage B sits under half of a frame the GPU
+owns, so moving its `ObtainBuffer`/`vertex`/`index` work to stage A cannot raise FPS on this build;
+it is a p99 item at best, and nothing in the run points at it as a p99 problem. `BB_SECTIONS` was
+off, so the split *inside* stage B is still unmeasured — that is step 1 below.
+
+**If it is picked up, in this order (planned, not started):**
+
+1. **One Deck run with `BB_SECTIONS=1 BB_FRAME_STATS=1`** in the heavy area for the `bind` /
+   `ObtainBuffer` / `vertex` / `index` µs per packet. Without it the rest is guesswork, and this
+   run's numbers say it is a p99/hitch item, not an FPS one.
+2. **Cheap half, small:** give the constant ring the vertex and index ranges. `CollectRingBindings`
+   (`gpu/render/raster_pipe.cpp:296`) already copies ≤16 KiB read-only, non-GPU-written buffers on
+   stage A; the game's index buffers and most of its vertex streams are small and read-only, so the
+   criterion exists — this is a per-draw lookup on stage A plus a stage-B skip when the ring holds
+   the range, not the buffer cache.
+3. **The real item, large:** stage A owning the buffer cache — residency, `LayerBind`, uploads,
+   shadow copies, GPU-write notes, and recording on stage A's scheduler. That is the change that
+   produced the 2026-10-01 heap corruption; it needs a per-stage cache split or an explicit handoff,
+   not a moved call. It is why this section waits for a measurement rather than a hunch.
+4. **Whichever part lands, behind experiment bit 34**, so the launcher has a switch and the run has
+   an in-run A/B from day one. `BB_PIPE_VERIFY=N` stays the correctness net (register-file equality
+   across stages, `gpu/render/raster_pipe.cpp:49`).
 
 **Verify.** `stage_a_cpu_ms` in the per-frame CSV and the `stage A waits over 0.5%: function:line
 N%` line printed with `BB_FRAME_STATS` (`gpu/render/raster_pipe.cpp:1114`); `BB_PIPE_VERIFY=N` for
@@ -469,16 +503,22 @@ A/B, because a microbench win that does not survive the frame is not a win.
 ## Experimental options for the launcher (planned, not built)
 
 The launcher has nowhere to put a switch that trades a measurable risk for a measurable win, and
-this file now has one candidate for it. When a *Mode → Experimental* page exists, the list is:
+this file now has three candidates for it (plus one that cannot be a switch). When a *Mode →
+Experimental* page exists, the list is:
 
 | Option | Env | What it gives, and what it costs |
 |---|---|---|
-| Occlusion label ordering: skip the pass breaks nothing reads | `BB_OCCLUSION_LABEL_ORDER=2` | ~0.1 ms/frame, paid with ~5 protection traps a second in the game's own label pool (§4). The only one measured on Deck so far |
+| Occlusion label ordering: skip the pass breaks nothing reads | `BB_OCCLUSION_LABEL_ORDER=2` | ~0.1 ms/frame, paid with ~5 protection traps a second in the game's own label pool (§4). Off by default, the only one measured on Deck |
+| Empty-target draw skip (§1) | bit 33 today; needs an env var (say `BB_EMPTY_DRAWS=0`) before it can be a switch | **On** by default: 16–17 draws a frame, 0.6–1.2 ms/frame as measured 2026-10-16. A switch here is for an A/B against the reference, not for shipping it off |
+| Buffer binding on stage A (§3) | none yet — build it behind experiment bit 34 | Would hand ~12% of stage B (0.51 desktop figure) to an idle stage A, for **p99/hitches only**: stage B is 30–66% busy on Deck. Not implemented |
 | Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
 
-Everything already on by default stays out of that page: the empty-target draw skip, the HLE image
-copies, two recording threads with async submit/pipelines, and the queries with predication *are*
-the shipped behaviour, and a switch for them would only be a way to turn it off.
+Everything else that is on by default stays out of that page: the HLE image copies, two recording
+threads with async submit/pipelines and the queries with predication *are* the shipped behaviour,
+and a switch for them would only be a way to turn it off. The empty-target skip is the exception
+listed above — also on by default, but it is the first thing to flip when the unaccounted lighting
+popping on single items comes back (`docs/history/SESSION_2026-10-23.md`, "Still open"), and it is
+the only way to A/B the skip without hand-editing `BB_TOGGLE_FILE`'s second number.
 
 ## Cheap A/Bs to run on the Deck before writing code
 
