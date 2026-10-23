@@ -270,7 +270,7 @@ with the trapping half removed (it orders before every label, arms no traps) —
 rest if this half ever needs to be taken out of a build again.
 
 **Measured on Deck 2026-10-23 (the 8.7-minute run, 28,281 frames).** 253,161 events — 486/s, ~9 a
-frame, up to ~2,000/s (~22 a frame) in the heaviest window — 8,809,175 segments, **0 not counted**,
+frame, up to ~2,090/s (~40 a frame) in the heaviest window — 8,809,175 segments, **0 not counted**,
 and **0 counters reused before their results were written out of 252,755**. `faults on an already
 lifted label trap`: **10 in the first 60 s** (the load the 2026-10-22 build died in) and **3 in the
 whole long run**, with **0 guest faults in either run** — so that race is real, frequent at a load,
@@ -307,7 +307,7 @@ are scaled to the game's resolution when a pass is drawn smaller
 (`OcclusionQueries::SetPassScale`, `gpu/render/vk_occlusion.cpp:134`), and events are summed by one
 resolve dispatch outside render passes (`gpu/render/vk_occlusion.cpp:170`).
 
-**Why it still matters.** ~9 events a frame in play (22 in the heaviest window), each ending a query
+**Why it still matters.** ~9 events a frame in play (40 in the heaviest window), each ending a query
 segment, with a resolve dispatch per boundary, and the game's own draws predicated on the results —
 so this is both cost and GPU culling, and the culling side is the one that is neither free nor
 priced. `BB_PM4_SELFTEST=1` checks the event intervals; experiment bit 4 of the second
