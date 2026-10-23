@@ -128,6 +128,9 @@ private:
     /// Labels whose results were left to the next boundary, and the pages the game was seen to
     /// read (LabelPolls) when it happened: what the optimization is worth on a run.
     u64 labels_skipped = 0, labels_skipped_in_pass = 0;
+    /// Statistics: faults on a watched page whose trap another thread's handler had already
+    /// lifted (StaleLabelTrapFault) — the race that used to be reported as a guest fault.
+    u64 stale_faults = 0;
     /// Statistics: counters the game reused (a new event at the address) while the GPU had not yet
     /// written their previous results (the game saw them not ready), of all reuses.
     std::unordered_map<u64, u64> written_at; ///< counter address -> tick of the resolve writing it

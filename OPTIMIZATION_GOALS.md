@@ -70,7 +70,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported here 2026-10-22** (experiment bit 33, on by default); Deck A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
 | 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
-| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the pass breaks the label ordering caused are now mostly gone by design | Small to measure | **Both in and on; label ordering narrowed 2026-10-22** (on by default, `BB_OCCLUSION_LABEL_ORDER=1` puts back the old ordering); Deck logs + the `queries read` A/B still to run |
+| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | Unknown; the pass breaks the label ordering caused are now mostly gone by design | Small to measure | **Both in and on; the label-trapping half crashed the first Deck load (2026-10-22) and its race is fixed here — re-run, or `BB_OCCLUSION_LABEL_ORDER=1` for the old ordering** |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
 | 7 | Sweep the recording knobs that already exist | CPU | Unmeasured; +18% was the desktop stand-in | Small | Built: `BB_VK_RECORD_THREADS`, `BB_VK_SEGMENT_KB`, `BB_ASYNC_SUBMIT` |
@@ -239,6 +239,27 @@ losing the order.
 **Flags.** Default: the pages the game reads. `BB_OCCLUSION_LABEL_ORDER=1`: before every label (the
 behaviour up to 2026-10-22). `=0`: never (statistics only, as it already meant). The startup line
 says which, next to the existing "occlusion queries are Vulkan occlusion queries" one.
+
+**First Deck run of it (2026-10-22): a guest crash at the load, and why.** The build
+(`dist/Bloodborne-bbport-0.6-znver2-occlusion.AppImage`) died on the first load from the title
+screen: one RIP, one address inside direct memory, reported by GXWorker:1, GXWorker:3 and the main
+thread at once (`docs/history/SESSION_2026-10-23.md`). `WriteBeforeLabel` arms the `QueryReads`
+reason, which is a **no-access** trap (`TRAP_NO_ACCESS`, `src/runtime_memory.c:899`), on the page
+holding the label — and label memory is the game's own small-object pool, written by every GXWorker
+every frame. So arming it faults every thread touching that page, the first handler lifts the trap
+for all of them, and `OnAccess` called the rest "not my trap" and returned false, which `probe.c`
+turns into a fatal guest fault. The run died within a second of the queries going live (the
+constructor's line and the fault are ~30 log lines apart), before the first five-second
+`Occlusion queries:` line — so that run priced nothing in this item either way.
+
+**Fixed 2026-10-23:** `OnAccess` retries the instruction when the page's trap is gone but its
+mapping still allows the access (`StaleLabelTrapFault`), and counts it (`faults on an already
+lifted label trap: N` in the five-second line). A page that is unmapped or still forbids the
+access stays a guest fault. The fatal guest-fault line now prints the kernel's `err` code and the
+page's trap reasons. `dist/Bloodborne-bbport-0.6-znver2-occlusion.AppImage` is rebuilt from it (the
+crashing package is `dist/old/…-crashed.AppImage`). `BB_OCCLUSION_LABEL_ORDER=1` is the same build
+with the trapping half removed (it orders before every label, arms no traps), which is the way to
+test the rest before this fix has a run behind it.
 
 **What to read on the Deck run** (`BB_FRAME_STATS=1`, the five-second `Occlusion queries:` line,
 which now ends):
@@ -506,12 +527,13 @@ against `frame_ms` in `frames.csv`, plus `stage B busy %` / `stage A waited %` f
 
 1. **The cheap A/Bs table** — one Deck session, and it decides between §1/§2/§4 (GPU) and
    §3/§5/§6 (CPU) on measurement rather than on this file's assumptions.
-2. **§4 — the label half is implemented (2026-10-22); its logs are the next thing to read.** The
-   pass break per label with events pending is gone for pages the game never touches, so the
-   five-second `Occlusion queries:` line's `N (M in a render pass)` and `pages read P of Q` decide
-   both whether that paid and whether the game reads labels at all. The remaining half is whether
-   the queries themselves pay: `queries read … none passed` in bulk, and `BB_OCCLUSION_QUERIES=0`
-   (the 0.51 fixed sequence) as the one-env-var A/B.
+2. **§4 — the label half is implemented (2026-10-22) and its first Deck run crashed the load
+   (2026-10-23, race fixed; see §4).** Re-run it: the five-second `Occlusion queries:` line's
+   `N (M in a render pass)`, `pages read P of Q` and `faults on an already lifted label trap`
+   decide both whether that paid and whether the crash is gone. Until then
+   `BB_OCCLUSION_LABEL_ORDER=1` is the build without the trapping half. The remaining half is
+   whether the queries themselves pay: `queries read … none passed` in bulk, and
+   `BB_OCCLUSION_QUERIES=0` (the 0.51 fixed sequence) as the one-env-var A/B.
 3. **§2** — 1–2% of GPU time and a small detector extension, once a Deck trace names what declines
    the `704x1x1` class.
 4. **§11** — a build-flag sweep screened by the CPU benchmark; no rendering change, and the Haswell

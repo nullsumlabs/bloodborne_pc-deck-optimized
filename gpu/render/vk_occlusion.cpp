@@ -17,6 +17,8 @@
 #include "vulkan/instance.h"
 #include "vulkan/shader_module.h"
 
+extern "C" int runtime_memory_vma_info(uintptr_t address, int* prot, int* type, uintptr_t* end);
+
 namespace Vulkan {
 
 namespace {
@@ -400,7 +402,7 @@ void OcclusionQueries::Event(VAddr address, u32 pairs) {
                     "pass); counters reused before their results were written: %llu of %llu; queries "
                     "read: %llu none passed, %llu some passed, %llu not valid; label results left "
                     "to the next boundary: %llu (%llu in a render pass), pages read by the game "
-                    "%zu of %zu watched\n",
+                    "%zu of %zu watched; faults on an already lifted label trap: %llu\n",
                     (unsigned long long)(events - reported),
                     std::chrono::duration<double>(now - last_report).count(),
                     (unsigned long long)events, (unsigned long long)begun,
@@ -409,9 +411,11 @@ void OcclusionQueries::Event(VAddr address, u32 pairs) {
                     (unsigned long long)reused, (unsigned long long)queries_hidden,
                     (unsigned long long)queries_passed, (unsigned long long)queries_invalid,
                     (unsigned long long)(labels_skipped + labels_skipped_in_pass),
-                    (unsigned long long)labels_skipped_in_pass, pages_read, pages_watched);
+                    (unsigned long long)labels_skipped_in_pass, pages_read, pages_watched,
+                    (unsigned long long)stale_faults);
         labels_ahead = labels_ahead_in_pass = 0;
         labels_skipped = labels_skipped_in_pass = 0;
+        stale_faults = 0;
         reused = reused_late = 0;
         queries_hidden = queries_passed = queries_invalid = 0;
         last_report = now;
@@ -472,6 +476,17 @@ bool OcclusionQueries::OnAccess(VAddr address, u64 rip, bool write, bool gpu_thr
         }
         watched.erase(it);
     } else if (!(BbLayer::WriteTraps::Reasons(address) & BbLayer::WriteTraps::QueryReads)) {
+        // The page is no longer trapped: another thread's handler lifted it between this fault
+        // and this lock (the page is armed for its first access, and the game's own threads
+        // write a label page together). The access is the game's, so retry the instruction
+        // instead of reporting a guest fault; only a page that really forbids it stays one.
+        int prot = 0, type = -1;
+        uintptr_t end = 0;
+        const bool mapped = runtime_memory_vma_info(address, &prot, &type, &end) != 0;
+        if (StaleLabelTrapFault(write, mapped, static_cast<unsigned>(prot))) {
+            ++stale_faults;
+            return true;
+        }
         return false;
     }
     BbLayer::WriteTraps::Set(page, 4096, BbLayer::WriteTraps::QueryReads, false);

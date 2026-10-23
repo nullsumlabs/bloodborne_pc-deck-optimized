@@ -182,9 +182,15 @@ static void fault(int sig, siginfo_t *info, void *context) {
     uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
     char line[512];
     Dl_info where;
+    /* The kernel's error code and the page's traps tell a wild pointer (not present) from a page
+     * the port itself holds (a trap whose handler did not take the fault). */
+    extern unsigned runtime_memory_trap_reasons(uintptr_t address);
     if (rip - (uintptr_t)image < 0x10000000)
-        snprintf(line, sizeof(line), "Guest fault (signal %d) at guest offset 0x%lx, address %p\n",
-                 sig, (unsigned long)(rip - (uintptr_t)image), info->si_addr);
+        snprintf(line, sizeof(line),
+                 "Guest fault (signal %d) at guest offset 0x%lx, address %p, err %#lx, traps %#x\n",
+                 sig, (unsigned long)(rip - (uintptr_t)image), info->si_addr,
+                 (unsigned long)uc->uc_mcontext.gregs[REG_ERR],
+                 runtime_memory_trap_reasons((uintptr_t)info->si_addr));
     else if (dladdr((void *)rip, &where) && where.dli_fname)
         snprintf(line, sizeof(line), "Host fault (signal %d) in %s+0x%lx (%s), address %p\n", sig, where.dli_fname,
                  (unsigned long)(rip - (uintptr_t)where.dli_fbase), where.dli_sname ? where.dli_sname : "?", info->si_addr);

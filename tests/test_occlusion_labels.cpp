@@ -61,6 +61,15 @@ int main() {
     watch = false;
     check("polled: past the cap an unknown page is ordered", many.ShouldWrite(page, watch) && !watch);
 
+    // A fault that arrives after another thread's handler lifted the trap (vk_occlusion.cpp,
+    // OnAccess): the game's own access, retried when the page allows it again.
+    using Vulkan::StaleLabelTrapFault;
+    check("stale trap, write, page writable again: retried", StaleLabelTrapFault(true, true, 3));
+    check("stale trap, read, page readable again: retried", StaleLabelTrapFault(false, true, 1));
+    check("stale trap, write, page read-only: a guest fault", !StaleLabelTrapFault(true, true, 1));
+    check("stale trap, read, page without read: a guest fault", !StaleLabelTrapFault(false, true, 0));
+    check("stale trap, address unmapped: a guest fault", !StaleLabelTrapFault(true, false, 3));
+
     std::printf("%s\n", failures == 0 ? "all passed" : "FAILED");
     return failures == 0 ? 0 : 1;
 }

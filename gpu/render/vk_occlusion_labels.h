@@ -97,4 +97,18 @@ private:
     std::unordered_set<u64> watched; ///< pages watched for their first access
 };
 
+/// A fault taken for a watched page's trap, once the trap is gone (vk_occlusion.cpp, OnAccess).
+/// The trap makes its page no access, and a label page is also written by the game's own threads:
+/// when it is armed, every thread that touches it faults, and the first handler lifts the trap for
+/// all of them. A later fault that gets here therefore found no reason of its own — the access is
+/// the game's own and only left over from the moment it faulted. `mapped`/`prot` are the page's
+/// mapping now (0 unmapped, 1 read, 2 write). True: retry the instruction. False: the page is not
+/// mapped, or still forbids that access — a guest fault of the game's own.
+inline bool StaleLabelTrapFault(bool write, bool mapped, unsigned prot) {
+    if (!mapped) {
+        return false;
+    }
+    return (prot & (write ? 2u : 1u)) != 0;
+}
+
 } // namespace Vulkan
