@@ -2,10 +2,11 @@ THIS PROJECT IS NOT RELATED TO SHADPS4. ALL QUESTIONS RELATED TO THIS PROJECT SH
 
 
 # bbport — a native Linux port of Bloodborne
+# deck-optimized - Optimized for Steam Deck, without no loss of quality
 
-*New in this "nocrash" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
+*New in this "deck-optimized" branch:** [crash fixes](#crash-fixes) below ported from awakechan's BloodBorneButPc — crashes that no longer end the game.
 
-*Experimental* steam-deck specific (possibly other configs) optimizations live in nocrash-optimizations branch.
+*Experimental* steam-deck specific (possibly other configs) optimizations added, after extensive testing on a real Deck.
 
 ## Crash fixes
 
@@ -46,7 +47,7 @@ syntax. Next goals are finding optimizations that can be somewhat easily impleme
 
 ```bash
 bash build_steam_deck.sh          # build.sh with -march=znver2 -mtune=znver2 (Van Gogh, Zen 2)
-bash packaging/appimage-ubuntu.sh # -> dist/Bloodborne_PC-nocrash-bbport-steamdeck-x86_64.AppImage
+bash packaging/appimage-ubuntu.sh # -> dist/Bloodborne_PC-bbport-steamdeck-x86_64.AppImage
 ```
 
 The flags reach every compiler call and both CMake configurations. `build.sh` and its AppImage stay
