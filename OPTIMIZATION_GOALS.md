@@ -74,7 +74,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported 2026-10-22, engaged on Deck 2026-10-23** (16–17 no-target draws a frame skipped); A/B with `0 0` still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
 | 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end | Medium | Not started; stage-B share **not measured in 0.6** (see §3) |
-| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | 0.1 ms/frame at most from the label half; the queries' culling is real, its price unmeasured | Small to measure | **Both in and on; the label race is fixed and clean over 8.7 min on Deck (2026-10-23), but that half saves only 19% of the pass breaks it was built for (~0.1 ms/frame). What is left is the queries' own A/B** |
+| 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | 0.1 ms/frame at most from the label half; the queries' culling is real, its price unmeasured | Small to measure | **Both in and on; the narrowed label ordering (`=2`) is measured at 19% of the pass breaks it was built for (~0.1 ms/frame) and is now off by default (2026-10-23). What is left is the queries' own A/B** |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
 | 7 | Sweep the recording knobs that already exist | CPU | Unmeasured; +18% was the desktop stand-in | Small | Built: `BB_VK_RECORD_THREADS`, `BB_VK_SEGMENT_KB`, `BB_ASYNC_SUBMIT` |
@@ -92,8 +92,8 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
   compilation (`BB_ASYNC_PIPELINES`, default on, `gpu/render/pipeline_cache.cpp:765`), occlusion
   queries (`BB_OCCLUSION_QUERIES`, default on) with predication implemented in the command
   processor (`gpu/cp/cp_graphics.cpp:378`), the two-stage draw pipeline, occlusion results ordered
-  only before the labels the game reads (`LabelPolls`, §4 — which on Deck orders 83% of them, see
-  §4), and the new memory model
+  before every label as on the PS4 (the narrow `LabelPolls` mode is `BB_OCCLUSION_LABEL_ORDER=2`,
+  §4, measured at ≤0.1 ms/frame on Deck and therefore not the default), and the new memory model
   on every GPU (0.6: Yharnam 4.30 vs 4.60 ms a frame, Oedon Chapel 234 vs 213 FPS on a 7800 XT).
 - **Built, never A/B'd on Deck:** the segmented recorder (§7) and the HLE copy detector (§2's
   measured part).
@@ -244,9 +244,11 @@ many as the game reads. Past 256 watched pages a page cannot be watched any more
 unasked, so a game whose labels are spread over more pages keeps the old behaviour rather than
 losing the order.
 
-**Flags.** Default: the pages the game reads. `BB_OCCLUSION_LABEL_ORDER=1`: before every label (the
-behaviour up to 2026-10-22). `=0`: never (statistics only, as it already meant). The startup line
-says which, next to the existing "occlusion queries are Vulkan occlusion queries" one.
+**Flags (default changed 2026-10-23).** Default: before every label, as on the PS4 and as it was
+before 2026-10-22 — the mode below is now `BB_OCCLUSION_LABEL_ORDER=2`, an experimental option
+(measured, and not worth its traps; see the verdict). `=0`: never (statistics only, as it already
+meant). The startup line says which, next to the existing "occlusion queries are Vulkan occlusion
+queries" one.
 
 **First Deck run of it (2026-10-22): a guest crash at the load, and why.** The build
 (`dist/Bloodborne-bbport-0.6-znver2-occlusion.AppImage`) died on the first load from the title
@@ -295,8 +297,15 @@ landing there. Buying the rest would take a per-label or per-query-set decision,
 game's predicated draws are skipped — the culling is there. What is still missing is its price:
 `BB_OCCLUSION_QUERIES=0` on the same spot, `frames.csv` p50/p99 and `BB_GPU_PROFILE` GPU ms. That
 is the one measurement left in this item, and it is worth more than everything the label half did.
-`BB_OCCLUSION_LABEL_ORDER=1` and `=0` now bracket the label half if somebody wants it priced
-exactly; neither should need another run otherwise.
+`=2` and `=0` now bracket the label half if somebody wants it priced exactly; neither should need
+another run otherwise.
+
+**Switched off by default the same day.** `LabelPolls::ModeFromEnv` returns `Every` unless
+`BB_OCCLUSION_LABEL_ORDER=2`, the traps and the retry stay in the tree for that mode, and the
+failure the retry guards against is a path no default build takes. The reason is the two numbers
+above: ~0.1 ms/frame bought by arming ~5 traps a second in the game's own label pool, on threads
+whose timing the rest of this file is trying to protect. The narrow mode's numbers stand, and the
+launcher can offer it as an experimental option (below) when somebody wants to spend the traps.
 
 **The old version of this file was wrong.** It repeated 0.51's README ("synthetic pixel counters,
 `IT_SET_PREDICATION` unimplemented"). In this tree the game's ZPASS_DONE events are real Vulkan
@@ -457,6 +466,20 @@ costs no rendering behaviour.
 **Verify.** The microbench's `copy_1k`, `hash_16k`, `page_scan` lines first; only then a frame-time
 A/B, because a microbench win that does not survive the frame is not a win.
 
+## Experimental options for the launcher (planned, not built)
+
+The launcher has nowhere to put a switch that trades a measurable risk for a measurable win, and
+this file now has one candidate for it. When a *Mode → Experimental* page exists, the list is:
+
+| Option | Env | What it gives, and what it costs |
+|---|---|---|
+| Occlusion label ordering: skip the pass breaks nothing reads | `BB_OCCLUSION_LABEL_ORDER=2` | ~0.1 ms/frame, paid with ~5 protection traps a second in the game's own label pool (§4). The only one measured on Deck so far |
+| Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
+
+Everything already on by default stays out of that page: the empty-target draw skip, the HLE image
+copies, two recording threads with async submit/pipelines, and the queries with predication *are*
+the shipped behaviour, and a switch for them would only be a way to turn it off.
+
 ## Cheap A/Bs to run on the Deck before writing code
 
 All of these are env vars in this tree; one session each, same spot, `frames.csv` on both sides.
@@ -464,7 +487,7 @@ All of these are env vars in this tree; one session each, same spot, `frames.csv
 | A/B | Env | What it prices |
 |---|---|---|
 | Occlusion queries | `BB_OCCLUSION_QUERIES=0` | §4: cost of queries and the culling they enable |
-| Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=1` | §4: priced 2026-10-23 at ≤0.1 ms/frame; `=1` (order everything) and `=0` (order nothing) only to bracket it exactly |
+| Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=2` | §4: priced 2026-10-23 at ≤0.1 ms/frame and off by default since; `=2` (the narrow mode) and `=0` (order nothing) only to bracket it exactly |
 | HLE compute copies | `BB_HLE_OFF=1` | §2: what the image-copy detector is worth now |
 | Draw pipeline | `BB_DRAW_PIPE=0` | The two-stage split itself, on Deck |
 | Recording | `BB_VK_RECORD_THREADS=1..3`, `BB_VK_SEGMENT_KB=16..128` | §7 |
@@ -541,10 +564,10 @@ against `frame_ms` in `frames.csv`, plus `stage B busy %` / `stage A waited %` f
    leans on it: stage A is 7.8 ms of an 18.4 ms frame with the GPU thread ~10% idle in the heavy
    windows, so the frame is GPU-bound and only the left column of the table below can pay.
 2. **§4 is settled to the extent this pass can settle it.** The label half is fixed (0 guest faults
-   over 8.7 min, 13 retries) and worth **≤0.1 ms/frame**, so it needs no more code. The one thing
-   left is the queries' own price: `BB_OCCLUSION_QUERIES=0` on Deck, same spot, `frames.csv` p50/p99
-   and `BB_GPU_PROFILE` GPU ms. 80% of counter reads come back empty, so there is real culling
-   behind them — the A/B says whether it costs more than it saves.
+   over 8.7 min, 13 retries), worth **≤0.1 ms/frame** and off by default since 2026-10-23 (`=2`), so
+   it needs no more code. The one thing left is the queries' own price: `BB_OCCLUSION_QUERIES=0` on
+   Deck, same spot, `frames.csv` p50/p99 and `BB_GPU_PROFILE` GPU ms. 80% of counter reads come back
+   empty, so there is real culling behind them — the A/B says whether it costs more than it saves.
 3. **§2** — 1–2% of GPU time and a small detector extension, once a Deck trace names what declines
    the `704x1x1` class.
 4. **§11** — a build-flag sweep screened by the CPU benchmark; no rendering change, and the Haswell

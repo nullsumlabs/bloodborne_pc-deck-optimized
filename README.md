@@ -47,15 +47,18 @@ changes come from and where they are still being measured.
 | Build | `build.sh` | `build_steam_deck.sh`: `-march=znver2 -mtune=znver2` (`BB_DECK_MARCH`, `BB_DECK_MTUNE`), PGO from a profile in `pgo/` |
 | Package | Nix AppImage | Deck AppImages in `dist/`, built with `packaging/appimage-ubuntu.sh` or repacked with `packaging/appimage-repack.sh` |
 | Crash fixes | 0.6's own | 0.6's own, plus the fork's (below) |
-| Frame time | Generic tuning | Deck-first work: empty-target draws dropped, occlusion label ordering narrowed, a per-frame CSV to measure it |
+| Frame time | Generic tuning | Deck-first work: empty-target draws dropped, the occlusion label ordering measured and left as the PS4 had it, a per-frame CSV to measure the rest |
 
 Already on by default here, because the Deck is what they were tuned for:
 
 - the two-stage draw pipeline (it turns itself on at 8+ hardware threads) and, on an 8-thread
   CPU, two Vulkan recording threads, with async submit and async pipeline compilation;
 - HLE image copies for the game's compute copy shaders (`BB_HLE_OFF=1`: the game's shaders);
-- occlusion queries with predication, with their results ordered only before the labels the game
-  actually reads (`BB_OCCLUSION_LABEL_ORDER=1`: every label; `=0`: never);
+- occlusion queries with predication, their results ordered before every label, as on the PS4. The
+  narrowed ordering — only the pages the game actually reads — was measured on Deck at ≤0.1 ms a
+  frame, paid for with a protection trap in the game's own label pool, so it is not the default
+  (`BB_OCCLUSION_LABEL_ORDER=2`: it, `=0`: never) and is kept for a planned experimental option in
+  the launcher;
 - draws with nothing to render into are dropped before they become packets (`BB_TOGGLE_FILE` with
   `0 0` is the reference build);
 - at 720p the startup resolution patch is used — the fastest path, and the live resolution path
@@ -320,9 +323,10 @@ pads without a touch surface. The port's settings menu remains Insert / L3+R3.
 
 With the *Restore Debug Camera* patch the mouse turns the free camera. The game's occlusion
 queries are Vulkan occlusion queries in the default model (`BB_OCCLUSION_QUERIES=0`: everything
-counts as visible, as in the old model), and their results are written before a GPU label only
-where the game has been seen to read labels (`BB_OCCLUSION_LABEL_ORDER=1`: before every label,
-the behaviour until now; `=0`: never).
+counts as visible, as in the old model), and their results are written before every GPU label, as
+on the PS4. Ordering them only before the labels the game reads (`BB_OCCLUSION_LABEL_ORDER=2`) was
+measured on Deck: it skips 0.10 pass breaks a frame (~0.1 ms) and arms about five traps a second in
+the game's own label pool, so it is experimental rather than the default (`=0`: never order them).
 
 **Upscaler assets** (not included; FSR 3.1 needs none):
 

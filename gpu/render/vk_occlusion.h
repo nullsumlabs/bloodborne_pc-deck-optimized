@@ -50,9 +50,9 @@ public:
     /// Before a label at `address` (an end-of-pipe write the CPU may poll): the events recorded
     /// before it are written first, as on the PS4, where the counters land in stream order ahead
     /// of later labels. Ends the render pass when one is open (copies and dispatches are outside
-    /// them), which is why only the labels the game reads are ordered (LabelPolls): the others
-    /// leave their results to the next boundary. BB_OCCLUSION_LABEL_ORDER=0: labels may go ahead
-    /// (statistics only), 1: before every label.
+    /// them), which is why BB_OCCLUSION_LABEL_ORDER=2 orders only the labels the game reads
+    /// (LabelPolls) and leaves the others to the next boundary. =0: labels may go ahead
+    /// (statistics only), unset or 1: before every label — the default.
     void WriteBeforeLabel(VAddr address);
 
     /// Events so far (BB_PM4_SELFTEST and the frame stats).
