@@ -231,6 +231,9 @@ ReadbackLog* Readbacks() {
         }
         std::fprintf(readbacks->file, "t_s,requester,address,window_kb,downloaded_kb,copies,is_write,"
                                       "wait_ms,ticks_since_write,write_done,readback_queue\n");
+        // The port ends with std::_Exit (window closed), which does not flush: without this a run
+        // with no readback leaves a 0-byte file that reads like a broken log.
+        std::fflush(readbacks->file);
         return readbacks;
     }();
     return log;
