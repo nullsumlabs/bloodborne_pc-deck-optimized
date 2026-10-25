@@ -47,22 +47,44 @@ changes come from and where they are still being measured.
 | Build | `build.sh` | `build_steam_deck.sh`: `-march=znver2 -mtune=znver2` (`BB_DECK_MARCH`, `BB_DECK_MTUNE`), PGO from a profile in `pgo/` |
 | Package | Nix AppImage | Deck AppImages in `dist/`, built with `packaging/appimage-ubuntu.sh` or repacked with `packaging/appimage-repack.sh` |
 | Crash fixes | 0.6's own | 0.6's own, plus the fork's (below) |
-| Frame time | Generic tuning | Deck-first work: empty-target draws dropped, the occlusion label ordering measured and left as the PS4 had it, a per-frame CSV to measure the rest |
+| Frame time | Generic tuning | Deck-first work: empty-target draws dropped, the occlusion label ordering narrowed to the labels the game reads, a per-frame CSV to measure the rest |
 
 Already on by default here, because the Deck is what they were tuned for:
 
 - the two-stage draw pipeline (it turns itself on at 8+ hardware threads) and, on an 8-thread
   CPU, two Vulkan recording threads, with async submit and async pipeline compilation;
 - HLE image copies for the game's compute copy shaders (`BB_HLE_OFF=1`: the game's shaders);
-- occlusion queries with predication, their results ordered before every label, as on the PS4. The
-  narrowed ordering — only the pages the game actually reads — was measured on Deck at ≤0.1 ms a
-  frame, paid for with a protection trap in the game's own label pool, so it is not the default
-  (`BB_OCCLUSION_LABEL_ORDER=2`: it, `=0`: never) and is kept for a planned experimental option in
-  the launcher;
-- draws with nothing to render into are dropped before they become packets (`BB_TOGGLE_FILE` with
-  `0 0` is the reference build);
+- occlusion queries with predication, their results ordered before the labels the game reads: the
+  narrowed ordering skips the pass breaks on labels nobody polls, 0.10 of one a frame on Deck
+  (~0.1 ms), and has been the default since 2026-10-25 after the package carrying it was played
+  through its loads and areas with no crash and no guest fault;
+- draws with nothing to render into are dropped before they become packets (`BB_EMPTY_DRAWS=0`
+  turns that off; `BB_TOGGLE_FILE` with `0 0` is the reference build);
 - at 720p the startup resolution patch is used — the fastest path, and the live resolution path
   does not engage below 1080p anyway.
+
+### Optimization flags
+
+Everything below is in this tree, so a package built from it carries it. The occlusion-label and
+empty-target rows are the renderer work of October 2026; the rest is what 0.6 already had on,
+listed so that it can be A/B'd rather than trusted:
+
+| Feature | Default | To switch it |
+|---|---|---|
+| Occlusion queries and predication (the game's ZPASS counters are Vulkan queries, its predicated draws are skipped on them) | on | `BB_OCCLUSION_QUERIES=0` — the fixed sequence, everything counts as visible |
+| Occlusion results ordered before the labels the game reads | on (since 2026-10-25) | `BB_OCCLUSION_LABEL_ORDER=1` — before every label, as on the PS4, no traps; `=0` — never, statistics only |
+| Draws with nothing to render into dropped before they become packets | on | `BB_EMPTY_DRAWS=0`; a full reference build is `BB_TOGGLE_FILE=<file>` with `0 0` in it |
+| HLE image copies for the game's compute copy shaders | on | `BB_HLE_OFF=1` (counts: `BB_HLE_STATS=1`, the declined copies: `BB_IMAGE_COPY_LOG=1`) |
+| Two-stage draw pipeline (decode, then draw recording) | on at 8+ hardware threads | `BB_DRAW_PIPE=0` |
+| Two Vulkan recording threads with async submit | on at 8 hardware threads | `BB_VK_RECORD_THREADS=1`, `BB_ASYNC_SUBMIT=0`, `BB_VK_SEGMENT_KB=N` (64) |
+| New pipelines compiled off the GPU thread | on | `BB_ASYNC_PIPELINES=0` — compile at once, the game waits |
+| Motion vectors reused for an unchanged pose | on | `BB_OBJECT_MOTION=0` — motion vectors off entirely, which changes the picture |
+| Startup resolution patch for outputs other than 1080p | on (720p on the Deck) | `BB_LIVE_RES=1` — live resolution changes instead, slower |
+| Any other optimization at run time | all on | `BB_TOGGLE_FILE=<file>`: two numbers, `1` bits switch an optimization **off**, the second number is the experiment mask (bit 33, the empty-target skip, is on by default). Re-read every 250 ms, so an A/B needs no restart |
+
+The occlusions and the empty-target skip print what they are doing at startup, and
+`BB_FRAME_STATS=1` (`BB_FRAME_LOG=<csv>`) is what shows whether a switch helped: the flag is meant
+for an A/B in the same spot, not for shipping the game with a feature off.
 
 `-march=znver2` enables instructions only AMD implements, so the Deck build does not run on Intel.
 `build.sh` stays the portable build for other machines.
@@ -323,10 +345,11 @@ pads without a touch surface. The port's settings menu remains Insert / L3+R3.
 
 With the *Restore Debug Camera* patch the mouse turns the free camera. The game's occlusion
 queries are Vulkan occlusion queries in the default model (`BB_OCCLUSION_QUERIES=0`: everything
-counts as visible, as in the old model), and their results are written before every GPU label, as
-on the PS4. Ordering them only before the labels the game reads (`BB_OCCLUSION_LABEL_ORDER=2`) was
-measured on Deck: it skips 0.10 pass breaks a frame (~0.1 ms) and arms about five traps a second in
-the game's own label pool, so it is experimental rather than the default (`=0`: never order them).
+counts as visible, as in the old model), and their results are written before the labels the game
+reads: skipping the pass breaks on labels nothing polls measured 0.10 of a break a frame on Deck
+(~0.1 ms) and has been the default since 2026-10-25. `BB_OCCLUSION_LABEL_ORDER=1` orders them
+before every label, as on the PS4, and arms no traps — the side to take if a label is ever seen to
+read stale counters; `=0` never orders them.
 
 **Upscaler assets** (not included; FSR 3.1 needs none):
 
