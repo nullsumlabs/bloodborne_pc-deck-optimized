@@ -2,6 +2,7 @@
 // bbport render: Rasterizer, the draw and dispatch entry points: pipeline selection, then recording here or on the
 // draw recording thread (raster_pipe.cpp), and the per-frame bookkeeping.
 
+#include <cstdlib>
 #include <mutex>
 #include <set>
 #include <string>
@@ -258,8 +259,9 @@ std::pair<u32, u32> GetDrawOffsets(
     return {vertex_offset, instance_offset};
 }
 
-// bbport (experiment bit 33, on by default: src/runtime_memory.c's EXPERIMENTS_ON_DEFAULT; a
-// second number in BB_TOGGLE_FILE replaces that both ways): draws with nothing to render into. A
+// bbport (on by default: experiment bit 33 of src/runtime_memory.c's EXPERIMENTS_ON_DEFAULT, and
+// BB_EMPTY_DRAWS=0/1 in front of it; a second number in BB_TOGGLE_FILE replaces the mask both
+// ways): draws with nothing to render into. A
 // draw whose pass has no color attachment and no depth target does something only if a stage
 // writes memory the guest can read afterwards — a buffer store of any kind, an image store or an
 // atomic. The old host skipped exactly these shapes (old-bbhost-nocrash/src/host/render.cpp:
@@ -268,6 +270,21 @@ std::pair<u32, u32> GetDrawOffsets(
 // ~10 a frame at 0.2-0.6 ms of a Deck frame (0.6-1.2 ms), beside their cost on the recording
 // thread.
 constexpr u64 SkipNoTargetDraw = 1ull << 33;
+
+/// BB_EMPTY_DRAWS=0/1 switches the skip off/on regardless of the experiment mask, so the package
+/// has a plain env var for it (README, launcher) beside the bit; unset: the mask decides.
+bool SkipNoTargetDrawEnabled() {
+    static const int forced = [] {
+        const char* env = std::getenv("BB_EMPTY_DRAWS");
+        if (env == nullptr || env[0] == '\0') {
+            return -1;
+        }
+        const bool on = env[0] != '0';
+        std::printf("GPU: empty-target draw skip %s (BB_EMPTY_DRAWS=%s)\n", on ? "on" : "off", env);
+        return on ? 1 : 0;
+    }();
+    return forced >= 0 ? forced != 0 : BbToggle::Experiment(SkipNoTargetDraw);
+}
 
 /// Whether this stage writes memory the guest could read back later. The port's own buffers are
 /// not the guest's: a stage reached through the page table or the fault buffer carries both as
@@ -292,7 +309,7 @@ bool StageWritesMemory(const Shader::Info& info) {
 } // namespace
 
 bool Rasterizer::DrawUnobservable(const GraphicsPipeline* pipeline) const {
-    if (!BbToggle::Experiment(SkipNoTargetDraw)) {
+    if (!SkipNoTargetDrawEnabled()) {
         return false;
     }
     // Nothing is attached: the fragment stage exports no color target (the render state's
