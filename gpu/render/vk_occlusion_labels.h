@@ -7,9 +7,9 @@
 // label on it is watched for its first CPU access (any read or write, once), and from that access
 // on the labels there are ordered. Pages nobody touches keep the pass open.
 //
-// BB_OCCLUSION_LABEL_ORDER: unset or 1 — before every label (the default since 2026-10-23). =0 —
-// never (as statistics only). =2 — only the pages the game reads (experimental: on Deck it saved
-// 0.10 of a pass break a frame, and it arms a guest fault on the game's own label pages to get it).
+// BB_OCCLUSION_LABEL_ORDER: unset or 2 — only the pages the game reads (the default since
+// 2026-10-25). =1 — before every label, as on the PS4 and as this was before 2026-10-22. =0 —
+// never (as statistics only).
 #pragma once
 
 #include <cstdlib>
@@ -22,27 +22,30 @@ namespace Vulkan {
 class LabelPolls {
 public:
     enum class Mode : u8 {
-        Polled, ///< only where the game has touched a page a label was written to (env=2)
-        Every,  ///< before every label (default, env unset or 1)
+        Polled, ///< only where the game has touched a page a label was written to (default)
+        Every,  ///< before every label (BB_OCCLUSION_LABEL_ORDER=1, as on the PS4)
         Never,  ///< never (BB_OCCLUSION_LABEL_ORDER=0)
     };
 
-    /// The default is Every. Polled was measured on Deck on 2026-10-23 at ≤0.1 ms/frame of saved
-    /// pass breaks, for ~5 traps a second armed on the game's label pool (and the 2026-10-22 crash
-    /// was one of those traps lifted under another thread); it stays as env=2, an experimental
-    /// option for the launcher rather than a default.
+    /// The default is Polled, measured on Deck on 2026-10-23 at 0.10 of a pass break a frame
+    /// (~0.1 ms) and played with on the Deck since 2026-10-23 without a guest fault (the
+    /// 2026-10-22 crash was one of its traps lifted under another thread, fixed in OnAccess).
+    /// `=1` goes back to ordering before every label, which is the safe side if a label ever reads
+    /// stale: it arms no traps at all.
     static Mode ModeFromEnv() {
         const char* env = std::getenv("BB_OCCLUSION_LABEL_ORDER");
-        if (env == nullptr) {
-            return Mode::Every;
+        if (env == nullptr || env[0] == '\0') {
+            return Mode::Polled;
         }
         if (env[0] == '0') {
             return Mode::Never;
         }
-        return env[0] == '2' ? Mode::Polled : Mode::Every;
+        return env[0] == '1' ? Mode::Every : Mode::Polled;
     }
 
-    explicit LabelPolls(Mode mode_ = Mode::Every) : mode{mode_} {}
+    /// No default argument on purpose: the process default is ModeFromEnv(), and a default-
+    /// constructed Polled whose watch requests nobody services would order nothing at all.
+    explicit LabelPolls(Mode mode_) : mode{mode_} {}
 
     /// Whether the results recorded so far are written before a label at `address`. `watch` is
     /// set when the caller should watch the page for its first access (once per page, at most

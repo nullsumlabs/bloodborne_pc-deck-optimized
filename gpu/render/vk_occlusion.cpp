@@ -94,19 +94,19 @@ OcclusionQueries::OcclusionQueries(const Instance& instance_, Scheduler& schedul
     device.destroyShaderModule(module);
     std::printf("GPU: the game's occlusion queries are Vulkan occlusion queries (%s counts)\n",
                 instance.IsOcclusionQueryPrecise() ? "exact" : "approximate");
-    // Only the labels the game reads need the results written ahead of them (LabelPolls, env=2).
+    // Only the labels the game reads need the results written ahead of them (LabelPolls).
     switch (label_polls.GetMode()) {
     case LabelPolls::Mode::Every:
-        std::printf("GPU: occlusion results before every label (the default; "
-                    "BB_OCCLUSION_LABEL_ORDER=2: only the pages the game reads, experimental)\n");
+        std::printf("GPU: occlusion results before every label, as on the PS4 "
+                    "(BB_OCCLUSION_LABEL_ORDER=1)\n");
         break;
     case LabelPolls::Mode::Never:
         std::printf("GPU: occlusion results not ordered against labels "
                     "(BB_OCCLUSION_LABEL_ORDER=0)\n");
         break;
     case LabelPolls::Mode::Polled:
-        std::printf("GPU: occlusion results before the labels the game reads only "
-                    "(BB_OCCLUSION_LABEL_ORDER=2, experimental: the default orders every label)\n");
+        std::printf("GPU: occlusion results before the labels the game reads only (the default; "
+                    "BB_OCCLUSION_LABEL_ORDER=1: before every label)\n");
         break;
     }
 }

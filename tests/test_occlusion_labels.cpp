@@ -18,14 +18,14 @@ int main() {
     using Vulkan::LabelPolls;
 
     unsetenv("BB_OCCLUSION_LABEL_ORDER");
-    check("unset: every label (the default)",
-          LabelPolls::ModeFromEnv() == LabelPolls::Mode::Every);
+    check("unset: only the pages the game reads (the default)",
+          LabelPolls::ModeFromEnv() == LabelPolls::Mode::Polled);
     setenv("BB_OCCLUSION_LABEL_ORDER", "0", 1);
     check("0: never", LabelPolls::ModeFromEnv() == LabelPolls::Mode::Never);
     setenv("BB_OCCLUSION_LABEL_ORDER", "1", 1);
-    check("1: every label", LabelPolls::ModeFromEnv() == LabelPolls::Mode::Every);
+    check("1: every label, as on the PS4", LabelPolls::ModeFromEnv() == LabelPolls::Mode::Every);
     setenv("BB_OCCLUSION_LABEL_ORDER", "2", 1);
-    check("2: only the pages the game reads (experimental)",
+    check("2: only the pages the game reads",
           LabelPolls::ModeFromEnv() == LabelPolls::Mode::Polled);
     unsetenv("BB_OCCLUSION_LABEL_ORDER");
 
