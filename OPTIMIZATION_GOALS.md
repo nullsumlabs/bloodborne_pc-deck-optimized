@@ -579,15 +579,16 @@ EN/PT-BR/ZH strings and this section) — `git revert 6802397` takes the setting
 developer rows, and the env vars stay what they were, unset by default. `ef56dcf` on top of it is
 this paragraph and nothing else (documentation only, reverting it changes no behaviour).
 
-The two packages built from that tree (2026-10-27, `build_steam_deck.sh` then
+The three packages built from that tree (2026-10-27, `build_steam_deck.sh`/`build.sh` then
 `packaging/appimage.sh`, no PGO — `pgo/` is empty on this host):
 
 | Package | Build | Carries |
 |---|---|---|
 | `dist/Bloodborne-bbport-0.6-znver2-pipebuffers.AppImage` | `-march=znver2 -mtune=znver2` (the defaults), 371 MB | §3's stage-A vertex/index ranges, and the fork group at the bottom of the launcher's settings page |
 | `dist/Bloodborne-bbport-0.6-znver3-pipebuffers.AppImage` | `BB_DECK_MARCH=znver3 BB_DECK_MTUNE=znver3`, 371 MB | the same tree and recipe, Zen 3 tuning: a desktop A/B, **not** a Deck package — `-march=znver3` is no promise that a Zen 2 CPU runs it (its `libbbgpu.so` does hold 0 `%zmm` and the same instruction mix as the znver2 one: 48 `vpermq`, 384 `vfmadd*`, 0 `vaesenc`) |
+| `dist/Bloodborne-bbport-0.6-x86_64-pipebuffers.AppImage` | `bash build.sh`: no `-march`/`-mtune`, so GCC's `-march=x86-64 -mtune=generic`, 371 MB | the same tree on the portable baseline, the one that runs on any x86-64 CPU (Intel and pre-Zen included): 0 VEX-encoded instructions in `bb-probe`, `libbbgpu.so` and `libbbnet.so`, so no AVX, AVX2 or FMA at all. Priced like `build.sh`'s other packages, i.e. no §11 tuning |
 
-Neither image was run: this host has no display and no Zen 2/Zen 3 CPU to try them on.
+None of the three images was run: this host has no display and no Zen 2/Zen 3 CPU to try them on.
 
 ## Cheap A/Bs to run on the Deck before writing code
 
