@@ -574,6 +574,10 @@ the first thing to flip when the unaccounted lighting popping on single items co
 (`docs/history/SESSION_2026-10-23.md`, "Still open"); since 2026-10-25 it has `BB_EMPTY_DRAWS=0`
 of its own, so that A/B needs no `BB_TOGGLE_FILE`.
 
+**If the group has to go:** it is one commit, `6802397` (the launcher's rows and variables, their
+EN/PT-BR/ZH strings and this section) — `git revert 6802397` takes the settings page back to the
+developer rows, and the env vars stay what they were, unset by default.
+
 ## Cheap A/Bs to run on the Deck before writing code
 
 All of these are env vars in this tree; one session each, same spot, `frames.csv` on both sides.
