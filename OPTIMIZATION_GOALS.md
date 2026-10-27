@@ -549,26 +549,30 @@ costs no rendering behaviour.
 **Verify.** The microbench's `copy_1k`, `hash_16k`, `page_scan` lines first; only then a frame-time
 A/B, because a microbench win that does not survive the frame is not a win.
 
-## Experimental options for the launcher (planned, not built)
+## The launcher's fork group (built 2026-10-27)
 
-The launcher has nowhere to put a switch that trades a measurable risk for a measurable win, and
-this file now has three candidates for it (plus one that cannot be a switch). Since 2026-10-25 the
-occlusion label ordering is on by default, so its entry below is the retreat rather than the
-feature. When a *Mode → Experimental* page exists, the list is:
+The fork's own switches are the last group of the launcher's settings page ("Оптимизации форка"),
+below the developer rows: one switch each, on as shipped, with a one-line note under the title. A
+switch there is for an A/B, not for shipping the game with a feature off — `BB_FRAME_STATS` above
+shows whether one helped. The launcher writes each variable both ways (except the label order's
+default, `2`), so its choice beats a variable inherited from the shell; the extra-variables row
+still comes last.
 
 | Option | Env | What it gives, and what it costs |
 |---|---|---|
+| Occlusion queries and predication (§4) | `BB_OCCLUSION_QUERIES=0` | The queries cull hidden draws; off is the fixed sequence, everything visible |
 | Occlusion label ordering: order before every label, as on the PS4 | `BB_OCCLUSION_LABEL_ORDER=1` | The retreat from the default (§4): ~0.1 ms/frame, and it arms no traps. Not a win — the switch to reach for if a label ever reads stale counters |
 | Empty-target draw skip (§1) | `BB_EMPTY_DRAWS=0` (experiment bit 33 in front of it) | **On** by default: 16–17 draws a frame, 0.6–1.2 ms/frame as measured 2026-10-16. A switch here is for an A/B against the reference, not for shipping it off |
 | Vertex/index ranges on stage A (§3) | `BB_PIPE_BUFFERS=0` | **On** by default since 2026-10-26: stage A copies each draw's vertex ranges and index buffer into the constant ring (≤16 KiB, read-only, not GPU-written), so stage B binds them without `ObtainBuffer`. A p99/hitch item on Deck (stage B ~49% busy), not an FPS one; the switch is for the A/B. The guest buffers too big for the ring stay on stage B until stage A owns the buffer cache |
+| HLE image copies (§2) | `BB_HLE_OFF=1` (the switch writes `1`; the variable is a mask) | Copies of the game's compute copy shaders run as the port's own; off — the game's shaders |
 | Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
 
-Everything else that is on by default stays out of that page: the HLE image copies, two recording
-threads with async submit/pipelines and the queries with predication *are* the shipped behaviour,
-and a switch for them would only be a way to turn it off. The empty-target skip is the exception
-listed above — also on by default, and it is the first thing to flip when the unaccounted lighting
-popping on single items comes back (`docs/history/SESSION_2026-10-23.md`, "Still open"); since
-2026-10-25 it has `BB_EMPTY_DRAWS=0` of its own, so that A/B needs no `BB_TOGGLE_FILE`.
+Everything else that is on by default stays out of the group: two recording threads with async
+submit/pipelines and the scheduler's segment size are tuning knobs, not a feature to switch off,
+and `BB_TOGGLE_FILE` already reaches every optimisation bit at run time. The empty-target skip is
+the first thing to flip when the unaccounted lighting popping on single items comes back
+(`docs/history/SESSION_2026-10-23.md`, "Still open"); since 2026-10-25 it has `BB_EMPTY_DRAWS=0`
+of its own, so that A/B needs no `BB_TOGGLE_FILE`.
 
 ## Cheap A/Bs to run on the Deck before writing code
 

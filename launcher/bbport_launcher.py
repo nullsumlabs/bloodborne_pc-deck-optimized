@@ -193,6 +193,13 @@ DEFAULTS = {
     "draw_pipe": "",
     "readbacks": "",
     "preupload": "",
+    # The fork's own renderer switches (the group at the bottom of the settings page): on as
+    # shipped, there so that one can be turned off for an A/B.
+    "occlusion_queries": True,
+    "occlusion_label_order": False,
+    "empty_draws": True,
+    "pipe_buffers": True,
+    "hle_copies": True,
     "mangohud": False,
     "frame_stats": False,
     "save_log": False,
@@ -392,6 +399,14 @@ def game_environment(s):
         env["BB_READBACKS"] = s["readbacks"]
     if s.get("preupload"):
         env["BB_PREUPLOAD"] = s["preupload"]
+    # The fork's own renderer switches. Written both ways (not only when off) so that the
+    # launcher's choice beats a variable inherited from the shell; extra_env still comes last.
+    env["BB_OCCLUSION_QUERIES"] = "1" if s.get("occlusion_queries", True) else "0"
+    # 1 = before every label (the PS4's order), 2 = only the polled ones (the default), 0 = never.
+    env["BB_OCCLUSION_LABEL_ORDER"] = "1" if s.get("occlusion_label_order") else "2"
+    env["BB_EMPTY_DRAWS"] = "1" if s.get("empty_draws", True) else "0"
+    env["BB_PIPE_BUFFERS"] = "1" if s.get("pipe_buffers", True) else "0"
+    env["BB_HLE_OFF"] = "0" if s.get("hle_copies", True) else "1"
     if s["mangohud"]:
         env["MANGOHUD"] = "1"
     if s["frame_stats"]:
@@ -953,6 +968,38 @@ class LauncherWindow(Adw.ApplicationWindow):
                                       text=self.settings["extra_env"])
         dev.add(self.extra_row)
         page.add(dev)
+
+        # The fork's own renderer work, last on the page: on as shipped, so a switch here is for
+        # an A/B (BB_FRAME_STATS on the developer rows above shows whether it helped).
+        fork = Adw.PreferencesGroup(
+            title=tr("Оптимизации форка"),
+            description=tr("Включены по умолчанию; выключение — для сравнения (A/B)"))
+        self.occlusion_row = Adw.SwitchRow(
+            title=tr("Запросы окклюзии"),
+            subtitle=tr("Скрытые объекты отсекаются на GPU; выкл. — как в 0.3"),
+            active=self.settings.get("occlusion_queries", True))
+        fork.add(self.occlusion_row)
+        self.occlusion_order_row = Adw.SwitchRow(
+            title=tr("Порядок окклюзии как на PS4"),
+            subtitle=tr("Вкл. — перед каждой меткой; выкл. — только читаемые"),
+            active=self.settings.get("occlusion_label_order", False))
+        fork.add(self.occlusion_order_row)
+        self.empty_draws_row = Adw.SwitchRow(
+            title=tr("Пропуск пустых отрисовок"),
+            subtitle=tr("Нет цвета и глубины — рисовать нечего; 0,6–1,2 мс/кадр"),
+            active=self.settings.get("empty_draws", True))
+        fork.add(self.empty_draws_row)
+        self.pipe_buffers_row = Adw.SwitchRow(
+            title=tr("Буферы отрисовки на потоке GPU"),
+            subtitle=tr("Вершины и индексы готовятся на потоке команд"),
+            active=self.settings.get("pipe_buffers", True))
+        fork.add(self.pipe_buffers_row)
+        self.hle_copies_row = Adw.SwitchRow(
+            title=tr("HLE-копии изображений"),
+            subtitle=tr("Копии делают шейдеры порта, не игры; выкл. — шейдеры игры"),
+            active=self.settings.get("hle_copies", True))
+        fork.add(self.hle_copies_row)
+        page.add(fork)
         return page
 
     def on_ui_language(self, row, _param):
@@ -1228,6 +1275,11 @@ class LauncherWindow(Adw.ApplicationWindow):
         s["as_0_3"] = self.as_0_3_row.get_active()
         s["gpu_profile"] = self.profile_row.get_active()
         s["vk_validation"] = self.validation_row.get_active()
+        s["occlusion_queries"] = self.occlusion_row.get_active()
+        s["occlusion_label_order"] = self.occlusion_order_row.get_active()
+        s["empty_draws"] = self.empty_draws_row.get_active()
+        s["pipe_buffers"] = self.pipe_buffers_row.get_active()
+        s["hle_copies"] = self.hle_copies_row.get_active()
         s["extra_env"] = self.extra_row.get_text().strip()
         s["mods_enabled"] = self.mods_enabled_row.get_active()
         s["online"] = self.online_row.get_active()

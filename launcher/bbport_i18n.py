@@ -370,6 +370,25 @@ EN = {
     "Слои валидации Vulkan": "Vulkan validation layers",
     "Сильно замедляет": "Much slower",
     "Доп. переменные (ИМЯ=значение через пробел)": "Extra variables (NAME=value, space-separated)",
+    # Fork optimizations (the group at the bottom of the settings page)
+    "Оптимизации форка": "Fork optimizations",
+    "Включены по умолчанию; выключение — для сравнения (A/B)":
+        "On by default; turn one off only for an A/B",
+    "Запросы окклюзии": "Occlusion queries",
+    "Скрытые объекты отсекаются на GPU; выкл. — как в 0.3":
+        "Hidden objects culled on the GPU; off — as in 0.3",
+    "Порядок окклюзии как на PS4": "Occlusion order as on the PS4",
+    "Вкл. — перед каждой меткой; выкл. — только читаемые":
+        "On — before every label; off — only the polled ones",
+    "Пропуск пустых отрисовок": "Skip empty draws",
+    "Нет цвета и глубины — рисовать нечего; 0,6–1,2 мс/кадр":
+        "No colour or depth — nothing to draw; 0.6–1.2 ms a frame",
+    "Буферы отрисовки на потоке GPU": "Draw buffers on the GPU thread",
+    "Вершины и индексы готовятся на потоке команд":
+        "Vertices and indices prepared on the command thread",
+    "HLE-копии изображений": "HLE image copies",
+    "Копии делают шейдеры порта, не игры; выкл. — шейдеры игры":
+        "The port's shaders do the copies, not the game's; off — the game's shaders",
 }
 
 PT_BR = {
@@ -605,6 +624,25 @@ PT_BR = {
     "Слои валидации Vulkan": "Camadas de validação do Vulkan",
     "Сильно замедляет": "Muito mais lento",
     "Доп. переменные (ИМЯ=значение через пробел)": "Variáveis extras (NOME=valor, separadas por espaço)",
+    # Fork optimizations (the group at the bottom of the settings page)
+    "Оптимизации форка": "Otimizações do fork",
+    "Включены по умолчанию; выключение — для сравнения (A/B)":
+        "Ativadas por padrão; desative só para comparar (A/B)",
+    "Запросы окклюзии": "Consultas de oclusão",
+    "Скрытые объекты отсекаются на GPU; выкл. — как в 0.3":
+        "Objetos ocultos são descartados na GPU; desligado — como na 0.3",
+    "Порядок окклюзии как на PS4": "Ordem de oclusão como no PS4",
+    "Вкл. — перед каждой меткой; выкл. — только читаемые":
+        "Ligado — antes de cada marcador; desligado — só os lidos",
+    "Пропуск пустых отрисовок": "Ignorar desenhos vazios",
+    "Нет цвета и глубины — рисовать нечего; 0,6–1,2 мс/кадр":
+        "Sem cor nem profundidade — nada a desenhar; 0,6–1,2 ms por quadro",
+    "Буферы отрисовки на потоке GPU": "Buffers de desenho na thread da GPU",
+    "Вершины и индексы готовятся на потоке команд":
+        "Vértices e índices preparados na thread de comandos",
+    "HLE-копии изображений": "Cópias de imagem HLE",
+    "Копии делают шейдеры порта, не игры; выкл. — шейдеры игры":
+        "As cópias usam os shaders do port, não do jogo; desligado — os do jogo",
 }
 
 
@@ -908,6 +946,25 @@ ZH_CN = {
     "Слои валидации Vulkan": "Vulkan 验证层",
     "Сильно замедляет": "会大幅降低速度",
     "Доп. переменные (ИМЯ=значение через пробел)": "附加环境变量（用空格分隔的 名称=值）",
+    # Fork optimizations (the group at the bottom of the settings page)
+    "Оптимизации форка": "分支优化",
+    "Включены по умолчанию; выключение — для сравнения (A/B)":
+        "默认开启；仅在 A/B 对比时关闭",
+    "Запросы окклюзии": "遮挡查询",
+    "Скрытые объекты отсекаются на GPU; выкл. — как в 0.3":
+        "在 GPU 上剔除被遮挡的物体；关闭则同 0.3",
+    "Порядок окклюзии как на PS4": "按 PS4 的遮挡顺序",
+    "Вкл. — перед каждой меткой; выкл. — только читаемые":
+        "开启：每个标记前都排序；关闭：仅被读取的",
+    "Пропуск пустых отрисовок": "跳过空绘制",
+    "Нет цвета и глубины — рисовать нечего; 0,6–1,2 мс/кадр":
+        "无颜色和深度目标，无需绘制；0.6–1.2 毫秒/帧",
+    "Буферы отрисовки на потоке GPU": "绘制缓冲在 GPU 线程准备",
+    "Вершины и индексы готовятся на потоке команд":
+        "顶点和索引在命令线程准备",
+    "HLE-копии изображений": "HLE 图像复制",
+    "Копии делают шейдеры порта, не игры; выкл. — шейдеры игры":
+        "由移植版着色器执行复制；关闭则用游戏着色器",
 }
 
 
