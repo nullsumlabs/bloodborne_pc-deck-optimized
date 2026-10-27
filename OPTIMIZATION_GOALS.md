@@ -4,10 +4,11 @@ Optimisations worth doing that are **not** quality reductions (no preset, resolu
 downgrades). First compiled 2026-10-15; this version rewritten **2026-10-21** for
 `deck-0.6-crashfixes` (0.6's own renderer: `gpu/render`, `gpu/textures`, `gpu/gcn`, `gpu/cp`), and
 checked line by line against that tree, with §1 ported and §4 implemented on **2026-10-22**,
-both of those measured on a real Deck on **2026-10-23**, and the narrow occlusion label ordering
-made the default again on **2026-10-25** after the package carrying it was played normally. Every
-item below is a measurement that still stands, a missing piece of code, or a knob that has not
-been swept.
+both of those measured on a real Deck on **2026-10-23**, the narrow occlusion label ordering
+made the default again on **2026-10-25** after the package carrying it was played normally, and
+§3's cheap half implemented on **2026-10-26** (on by default, `BB_PIPE_BUFFERS=0` to disable it).
+Every item below is a measurement that still stands, a missing piece of code, or a knob that has
+not been swept.
 
 Sources: [parallel_gpu.md](docs/parallel_gpu.md) (the CPU profile's design notes),
 [CHANGES_0.6.md](docs/CHANGES_0.6.md), [CHANGES_after_0.5.md](docs/CHANGES_after_0.5.md),
@@ -82,7 +83,7 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
 |---|---|---|---|---|---|
 | 1 | Skip draws with nothing to render into | GPU | **0.6–1.2 ms/frame (3–6%)** — Deck, 2026-10-16 | Small | **Ported 2026-10-22, engaged on Deck 2026-10-23** (16–17 no-target draws a frame skipped); `BB_EMPTY_DRAWS=0` is its switch since 2026-10-25; the `0 0` A/B still to run |
 | 2 | The remaining emulated `3d5ebf4e` copy class (`704x1x1`) | GPU | 0.21–0.35 ms/frame (~1–2%) | Small | HLE detector is in and on; this class declines it |
-| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end, **and stage B runs at ~49% busy on Deck (never above 66%)** so it is a p99 item | Medium | Planned, not started (§3 has the order of work); the stage-B gate is answered, the µs split is not |
+| 3 | Move buffer binding from stage B to stage A | CPU | ≤12% of stage B ⇒ ~2–6% end-to-end, **and stage B runs at ~49% busy on Deck (never above 66%)** so it is a p99 item | Medium | **Cheap half done 2026-10-26, on by default** (§3): the vertex ranges and the index buffer are copied on stage A and bound from the ring there; `BB_PIPE_BUFFERS=0` leaves them to stage B. Stage A owning the buffer cache (the rest) is not started |
 | 4 | Occlusion queries + predication: settle the pair on Deck | GPU + CPU | 0.1 ms/frame at most from the label half; the queries' culling is real, its price unmeasured | Small to measure | **Both in and on; the narrowed label ordering is the default again (2026-10-25)** — measured at 19% of the pass breaks it was built for (~0.1 ms/frame), `=1` restores the PS4 order. What is left is the queries' own A/B |
 | 5 | Guest copies off the GPU thread's critical path | CPU | ≤13% of the GPU thread; 3–6% realistic | Medium | Partly built (deferred uploads, parallel copies); waits still unmeasured |
 | 6 | Cheaper object motion vectors | CPU | 10% desktop ceiling; **≈3% of a Deck frame** left after the gate | Medium | **Pose-reuse gate already in** (`Motion::History::Moving`, `IndexRangeCache`); see §6 |
@@ -103,7 +104,9 @@ is good above ~256 B) is exactly what a Deck run answers — and §11 is written
   processor (`gpu/cp/cp_graphics.cpp:378`), the two-stage draw pipeline, occlusion results ordered
   before the labels the game reads (`LabelPolls`, the default since 2026-10-25, §4;
   `BB_OCCLUSION_LABEL_ORDER=1` orders before every label as on the PS4, `=0` never), and the new
-  memory model on every GPU (0.6: Yharnam 4.30 vs 4.60 ms a frame, Oedon Chapel 234 vs 213 FPS on a 7800 XT).
+  memory model on every GPU (0.6: Yharnam 4.30 vs 4.60 ms a frame, Oedon Chapel 234 vs 213 FPS on a 7800 XT),
+  and since 2026-10-26 the vertex ranges and the index buffer of a draw copied into the constant ring
+  on the GPU command thread (§3, `BB_PIPE_BUFFERS=0` leaves them to the recording thread).
 - **Built, never A/B'd on Deck:** the segmented recorder (§7) and the HLE copy detector (§2's
   measured part).
 - **Not in this tree at all:** the crash recorder (`src/runtime_crash.c`, same branch) and the
@@ -247,23 +250,52 @@ owns, so moving its `ObtainBuffer`/`vertex`/`index` work to stage A cannot raise
 it is a p99 item at best, and nothing in the run points at it as a p99 problem. `BB_SECTIONS` was
 off, so the split *inside* stage B is still unmeasured — that is step 1 below.
 
-**If it is picked up, in this order (planned, not started):**
+**Done 2026-10-26: step 2, the cheap half, on by default.** The vertex stream ranges and the index
+buffer of each direct draw are merged and copied by stage A into the constant ring, the same ring
+and the same criteria the constants already use, and stage B binds the ring's buffer and offset
+instead of calling `ObtainBuffer` (`CollectRingRanges`, `gpu/render/raster_pipe.cpp`;
+`RingRange`/`FindRingRange` in `gpu/render/vk_ring_ranges.h`). Per draw, stage B no longer does, for
+those ranges, `ObtainBuffer`, the in-place read note and the `IsBufferAccessed` barrier bookkeeping;
+the copies are the bytes `memcpy`ed on stage A where the V# tables were read anyway (which is why a
+later constant RAM dump cannot change them either — the #44 class of bug). What stays on stage B:
+the descriptor writes, every buffer too big for the ring (the 16 KiB `STREAM_THRESHOLD`, as for the
+constants), any range the GPU has written or will write, mirrored ones, and the texture side.
+
+`BB_PIPE_BUFFERS=0` leaves the ranges to stage B as before; `=1` forces them back on in a run with
+the variable inherited as 0. It needs the two-stage pipeline (stage A only exists then), so
+`BB_DRAW_PIPE=0` turns it off with the pipeline.
+
+**Variables and counters added for it (2026-10-26).** One env var; the rest are readings of the
+existing diagnostics. Sections are `BB_SECTIONS=1` (`gpu/shim/bbport_sections.h`).
+
+| Switch | Default | What it is |
+|---|---|---|
+| `BB_PIPE_BUFFERS` | on (unset, or `1`; any value starting with `0` is off) | Stage A copies each direct draw's merged vertex ranges and its index buffer (≤16 KiB, read-only, not GPU-written, not mirrored, no queued write) into the constant ring; stage B binds the ring instead of `ObtainBuffer`. Startup line printed when set |
+| `BB_SECTIONS=1` | off | New stage-A sections: `A: ranges` (the collection), `A: range checks`, `A: range copy`; compare with stage B's `vertex`, `index`, `ObtainBuffer` |
+| `BB_FRAME_STATS=1` | off | New line `draw inputs on stage A per packet: N ranges copied, M bound; obtained on stage B K` in the draw-pipe window (counters `ring_ranges_copied` / `ring_ranges_bound` / `draw_ranges_obtained`, `gpu/shim/bbport_toggles.h`) |
+
+**State:** the picture has not been A/B'd on a Deck yet — the switch is there for exactly that, one
+run each way at the same spot with `frames.csv`. `BB_FRAME_STATS=1` prints what it did in the draw
+pipe window, per packet (`ranges copied`, `bound`, `obtained on stage B`): a copy stage B does not
+bind means the copies were made for nothing; `BB_SECTIONS=1` adds `A: ranges`, `A: range checks`,
+`A: range copy` on stage A and the `vertex` / `index` / `ObtainBuffer` parts on stage B to compare
+with the same run's stages. `ring-ranges-test` (`ninja -C out/gpu ring-ranges-test`) covers the
+switch and the covering lookup.
+
+The rest of this section is unchanged and still open, in this order:
 
 1. **One Deck run with `BB_SECTIONS=1 BB_FRAME_STATS=1`** in the heavy area for the `bind` /
-   `ObtainBuffer` / `vertex` / `index` µs per packet. Without it the rest is guesswork, and this
-   run's numbers say it is a p99/hitch item, not an FPS one.
-2. **Cheap half, small:** give the constant ring the vertex and index ranges. `CollectRingBindings`
-   (`gpu/render/raster_pipe.cpp:296`) already copies ≤16 KiB read-only, non-GPU-written buffers on
-   stage A; the game's index buffers and most of its vertex streams are small and read-only, so the
-   criterion exists — this is a per-draw lookup on stage A plus a stage-B skip when the ring holds
-   the range, not the buffer cache.
-3. **The real item, large:** stage A owning the buffer cache — residency, `LayerBind`, uploads,
+   `ObtainBuffer` / `vertex` / `index` µs per packet, now with `BB_PIPE_BUFFERS=1/0` as the A/B
+   inside it. The 2026-10-23 run's numbers still say this is a p99/hitch item, not an FPS one.
+2. **The real item, large:** stage A owning the buffer cache — residency, `LayerBind`, uploads,
    shadow copies, GPU-write notes, and recording on stage A's scheduler. That is the change that
    produced the 2026-10-01 heap corruption; it needs a per-stage cache split or an explicit handoff,
-   not a moved call. It is why this section waits for a measurement rather than a hunch.
-4. **Whichever part lands, behind experiment bit 34**, so the launcher has a switch and the run has
-   an in-run A/B from day one. `BB_PIPE_VERIFY=N` stays the correctness net (register-file equality
-   across stages, `gpu/render/raster_pipe.cpp:49`).
+   not a moved call, and it is what would take the guest buffers too big for the ring off stage B.
+3. **Experiment bit 34** was the doc's plan for the switch; it is taken (`TextureBindHelper`), and
+   the 21–29 range is the motion/upscaler debug range, so this landed on an env var read once. A
+   `BbToggle` bit is still worth it for an in-run A/B once one is free.
+   `BB_PIPE_VERIFY=N` stays the correctness net (register-file equality across stages,
+   `gpu/render/raster_pipe.cpp:49`).
 
 **Verify.** `stage_a_cpu_ms` in the per-frame CSV and the `stage A waits over 0.5%: function:line
 N%` line printed with `BB_FRAME_STATS` (`gpu/render/raster_pipe.cpp:1114`); `BB_PIPE_VERIFY=N` for
@@ -528,7 +560,7 @@ feature. When a *Mode → Experimental* page exists, the list is:
 |---|---|---|
 | Occlusion label ordering: order before every label, as on the PS4 | `BB_OCCLUSION_LABEL_ORDER=1` | The retreat from the default (§4): ~0.1 ms/frame, and it arms no traps. Not a win — the switch to reach for if a label ever reads stale counters |
 | Empty-target draw skip (§1) | `BB_EMPTY_DRAWS=0` (experiment bit 33 in front of it) | **On** by default: 16–17 draws a frame, 0.6–1.2 ms/frame as measured 2026-10-16. A switch here is for an A/B against the reference, not for shipping it off |
-| Buffer binding on stage A (§3) | none yet — build it behind experiment bit 34 | Would hand ~12% of stage B (0.51 desktop figure) to an idle stage A, for **p99/hitches only**: stage B is ~49% busy (median) on Deck, never above 66%. Not implemented |
+| Vertex/index ranges on stage A (§3) | `BB_PIPE_BUFFERS=0` | **On** by default since 2026-10-26: stage A copies each draw's vertex ranges and index buffer into the constant ring (≤16 KiB, read-only, not GPU-written), so stage B binds them without `ObtainBuffer`. A p99/hitch item on Deck (stage B ~49% busy), not an FPS one; the switch is for the A/B. The guest buffers too big for the ring stay on stage B until stage A owns the buffer cache |
 | Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
 
 Everything else that is on by default stays out of that page: the HLE image copies, two recording
@@ -547,6 +579,7 @@ All of these are env vars in this tree; one session each, same spot, `frames.csv
 | Occlusion queries | `BB_OCCLUSION_QUERIES=0` | §4: cost of queries and the culling they enable |
 | Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=1` | §4: the default is the narrow mode (priced 2026-10-23 at ~0.1 ms/frame); `=1` is the PS4 ordering, the other side of that A/B, `=0` orders nothing |
 | Empty-target draw skip | `BB_EMPTY_DRAWS=0` | §1: what the skip is worth on this build (0.6–1.2 ms/frame is the 2026-10-16 figure and has never been A/B'd on 0.6) |
+| Vertex/index ranges on stage A | `BB_PIPE_BUFFERS=0` | §3: what the moved buffer work is worth (`stage A waited %`, `stage B busy %`, the `ranges copied/bound/obtained` line) — expect p99, not FPS, on Deck |
 | HLE compute copies | `BB_HLE_OFF=1` | §2: what the image-copy detector is worth now |
 | Draw pipeline | `BB_DRAW_PIPE=0` | The two-stage split itself, on Deck |
 | Recording | `BB_VK_RECORD_THREADS=1..3`, `BB_VK_SEGMENT_KB=16..128` | §7 |
@@ -634,7 +667,8 @@ against `frame_ms` in `frames.csv`, plus `stage B busy %` / `stage A waited %` f
    run already suggests the current `-mtune` is not free.
 5. **§6** only if the measurement puts stage B above the frame time — and then the gate and index
    cache are already in, so expect ~3%, not the 10% the desktop number suggests.
-6. **§3 and §5** — the same rule: CPU time below the frame time is a p99 item, not an FPS item. §3
-   additionally needs stage A to own the buffer cache.
+6. **§3 and §5** — the same rule: CPU time below the frame time is a p99 item, not an FPS item. §3's
+   cheap half is in (2026-10-26, `BB_PIPE_BUFFERS`); what is left of it needs stage A to own the
+   buffer cache.
 7. **§7 and §8** — sweeps and a flag scope, not backlog.
 8. Everything else in the table order.

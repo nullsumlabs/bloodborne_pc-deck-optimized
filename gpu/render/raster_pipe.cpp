@@ -29,6 +29,7 @@ struct DrawPacket {
     std::array<Gcn::CbDbExtent, Gcn::NUM_COLOR_BUFFERS> cb_extent;
     Gcn::CbDbExtent db_extent;
     u32 num_vsharps; ///< V#s of the vertex streams, after the indirect arguments
+    u32 num_ranges; ///< vertex and index ranges stage A copied into the ring
     u32 worker; ///< the resolve worker that copied constants for it (~0u: none)
     u64 ring_end; ///< constant ring position after this packet's copies
     u64 worker_ring_end; ///< the same in that worker's ring
@@ -65,6 +66,10 @@ bool Rasterizer::DrawPipeWanted() {
 
 bool Rasterizer::UseDrawPipe() const {
     return draw_pipe && !host_markers_enabled && !BbToggle::Disabled(BbToggle::DrawPipeline);
+}
+
+const RingRange* Rasterizer::FindRingRange(VAddr begin, VAddr end) const {
+    return RingRangeFor(packet_ranges, num_packet_ranges, begin, end);
 }
 
 bool Rasterizer::OnStageA() const {
@@ -510,6 +515,86 @@ void Rasterizer::CollectRingBindings(const Shader::Info& stage, const PreparedDr
     }
 }
 
+void Rasterizer::CollectRingRanges(
+    const GraphicsPipeline* pipeline, const PreparedDraw* prepared,
+    std::span<const Gcn::Buffer> vsharps, bool is_indexed, u32 index_offset,
+    boost::container::static_vector<RingRange, Shader::NUM_BUFFERS + 1>& out) {
+    BB_SECTION(ARingRanges);
+    // The ring and its criteria are the constants' (CollectRingBindings): small, read-only, not
+    // written by the GPU, not replaced by a dump still queued for the recording thread.
+    if (!constant_ring || BbToggle::Disabled(BbToggle::ConstantRing) ||
+        VideoCore::ConstantsInPlace()) {
+        return;
+    }
+    const u64 alignment = std::max<u64>(instance.StorageMinAlignment(),
+                                        instance.UniformMinAlignment());
+    const auto copy = [&](VAddr begin, VAddr end) {
+        const u64 size = memory->ClampRangeSize(begin, end - begin);
+        bool copyable;
+        {
+            BB_SECTION(ARingRangeChecks);
+            copyable = size != 0 && size <= VideoCore::BufferCache::STREAM_THRESHOLD &&
+                       !buffer_cache.IsRegionGpuModified(begin, size) &&
+                       !PendingWriteOverlaps(begin, size) &&
+                       !VideoCore::BufferCache::LayerMirrored(begin, size);
+        }
+        if (!copyable) {
+            return; // the recording thread obtains it itself
+        }
+        const auto offset = constant_ring->Allocate(size, alignment);
+        if (!offset) {
+            return; // the ring is still in use by the GPU
+        }
+        BB_SECTION(ARingRangeCopy);
+        memory->CopySparseMemory(begin, constant_ring->Data(*offset), size);
+        constant_ring->Flush(*offset, size);
+        out.push_back({begin, end, *offset});
+        BbStats::ring_ranges_copied.fetch_add(1, std::memory_order_relaxed);
+    };
+    // The vertex streams, merged exactly as ResolveVertexBuffers merges them: a draw-preparation
+    // worker's ranges when the draw uses its vertex inputs, else the V#s read here.
+    const auto& fetch = pipeline->GetFetchShader();
+    const PreparedVertexInputs* ready =
+        prepared && prepared->vertex.valid && instance.IsVertexInputDynamicState() && fetch &&
+                fetch->attributes.size() == prepared->vertex.count && !FrameCapture::Active() &&
+                !BbToggle::Disabled(BbToggle::PreparedResources)
+            ? &prepared->vertex
+            : nullptr;
+    if (ready) {
+        for (u32 i = 0; i < ready->num_ranges; ++i) {
+            copy(ready->ranges[i].base, ready->ranges[i].end);
+        }
+    } else {
+        VertexInputs<std::pair<VAddr, VAddr>> streams;
+        for (const auto& buffer : vsharps) {
+            if (buffer.base_address != 0 && buffer.GetSize() > 0) {
+                streams.emplace_back(buffer.base_address, buffer.base_address + buffer.GetSize());
+            }
+        }
+        std::ranges::sort(streams, {}, &std::pair<VAddr, VAddr>::first);
+        // Overlapping and touching streams share one range: the copy is of the bytes, and the
+        // recording thread places each stream at its offset in the range it finds.
+        boost::container::static_vector<std::pair<VAddr, VAddr>, MaxVertexBufferCount> merged;
+        for (const auto& stream : streams) {
+            if (merged.empty() || merged.back().second < stream.first) {
+                merged.push_back(stream);
+            } else {
+                merged.back().second = std::max(merged.back().second, stream.second);
+            }
+        }
+        for (const auto& range : merged) {
+            copy(range.first, range.second);
+        }
+    }
+    if (is_indexed) {
+        const auto& regs = Regs();
+        const u32 index_size =
+            regs.index_buffer_type.index_type == Gcn::IndexType::Index16 ? 2 : 4;
+        const VAddr address = regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
+        copy(address, address + u64(regs.num_indices) * index_size);
+    }
+}
+
 void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_prepared,
                           bool is_indexed, u32 index_offset, const Gcn::ComputeProgram* cs,
                           const IndirectDraw* indirect) {
@@ -687,6 +772,16 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
         }
     }
     size += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));
+    // bbport (§3): this draw's vertex ranges and index buffer, copied into the constant ring here
+    // when they are small and read-only, so that the recording thread binds them without
+    // ObtainBuffer (vk_ring_ranges.h, BB_PIPE_BUFFERS=0: left to it).
+    thread_local boost::container::static_vector<RingRange, Shader::NUM_BUFFERS + 1> ring_ranges;
+    ring_ranges.clear();
+    if (pipeline && !pipeline->IsCompute() && RingDrawInputsEnabled()) {
+        CollectRingRanges(static_cast<const GraphicsPipeline*>(pipeline), used_prepared, vsharps,
+                          is_indexed, index_offset, ring_ranges);
+    }
+    size += AlignPacket(u32(ring_ranges.size() * sizeof(RingRange)));
     const u32 interval = VerifyInterval();
     const bool verify = interval && (draw_pipe->packets % interval) == 0;
     if (verify) {
@@ -712,6 +807,7 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     packet.db_extent = liverpool->last_db_extent;
     packet.ring_end = constant_ring ? constant_ring->Position() : 0;
     packet.num_vsharps = static_cast<u32>(vsharps.size());
+    packet.num_ranges = static_cast<u32>(ring_ranges.size());
     packet.worker = ~0u;
     packet.worker_ring_end = 0;
     out += sizeof(DrawPacket);
@@ -755,6 +851,8 @@ void Rasterizer::PostDraw(const Pipeline* pipeline, const PreparedDraw* used_pre
     }
     std::memcpy(out, vsharps.data(), vsharps.size() * sizeof(Gcn::Buffer));
     out += AlignPacket(u32(vsharps.size() * sizeof(Gcn::Buffer)));
+    std::memcpy(out, ring_ranges.data(), ring_ranges.size() * sizeof(RingRange));
+    out += AlignPacket(u32(ring_ranges.size() * sizeof(RingRange)));
     if (verify) {
         std::memcpy(out, &liverpool->regs, sizeof(Gcn::Regs));
         out += sizeof(Gcn::Regs);
@@ -875,6 +973,9 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     }
     self.packet_vsharps = {reinterpret_cast<const Gcn::Buffer*>(in), packet.num_vsharps};
     in += AlignPacket(u32(packet.num_vsharps * sizeof(Gcn::Buffer)));
+    self.packet_ranges = reinterpret_cast<const RingRange*>(in);
+    self.num_packet_ranges = packet.num_ranges;
+    in += AlignPacket(u32(packet.num_ranges * sizeof(RingRange)));
     if (packet.verify) {
         // The resource tables the GPU thread walked must read the same now: else a write
         // still queued here (WriteData, DMA) changed them after that thread read them.
@@ -960,6 +1061,8 @@ void Rasterizer::RunDrawPacket(void* context, const u8* data, u32 size) {
     Shader::Info::num_ud_snapshots = 0;
     self.num_ring_stages = 0;
     self.packet_vsharps = {};
+    self.packet_ranges = nullptr;
+    self.num_packet_ranges = 0;
     if (self.constant_ring) {
         self.constant_ring->Stamp(packet.ring_end);
     }
@@ -1110,6 +1213,25 @@ void Rasterizer::PrintPipeStats() {
                         double(n - last_task_counts[k]) / seconds);
             last_task_cycles[k] = c;
             last_task_counts[k] = n;
+        }
+    }
+    // §3: the vertex/index ranges stage A copied, how many of them stage B bound, and the ones it
+    // had to obtain itself. Copied but not bound means the copies were made for nothing.
+    {
+        static u64 last_copied = 0, last_bound = 0, last_obtained = 0;
+        const u64 copied = BbStats::ring_ranges_copied.load(std::memory_order_relaxed);
+        const u64 bound_ranges = BbStats::ring_ranges_bound.load(std::memory_order_relaxed);
+        const u64 obtained = BbStats::draw_ranges_obtained.load(std::memory_order_relaxed);
+        if (copied != last_copied || bound_ranges != last_bound || obtained != last_obtained) {
+            const double draws = double(draw_pipe->packets - last_packets);
+            std::printf("\n  draw inputs on stage A per packet: %.2f ranges copied, %.2f bound; "
+                        "obtained on stage B %.2f",
+                        draws > 0 ? double(copied - last_copied) / draws : 0.0,
+                        draws > 0 ? double(bound_ranges - last_bound) / draws : 0.0,
+                        draws > 0 ? double(obtained - last_obtained) / draws : 0.0);
+            last_copied = copied;
+            last_bound = bound_ranges;
+            last_obtained = obtained;
         }
     }
     std::printf("\n  stage A waits over 0.5%%:");

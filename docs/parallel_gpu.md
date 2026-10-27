@@ -169,6 +169,25 @@ memoized per slot (key copy + compare), the size hint (`last_cb_extent`) is GPU-
 rather than register state, and the rest of `BeginRendering` is view lookup, barriers and the
 reduced-resolution proxies — all on shared mutable state.
 
+## Vertex and index ranges off stage B (2026-10-26)
+
+The cheap half of this doc's "next step" (buffer binding ~12% of the GPU thread, `ObtainBuffer`
+~11%): the draw recording thread no longer obtains the vertex streams' ranges or the index buffer,
+because the GPU command thread copies them into the constant ring while it is reading the V# tables
+anyway. `CollectRingRanges` (`render/raster_pipe.cpp`) merges the streams exactly as
+`ResolveVertexBuffers` does — a draw-preparation worker's ranges when the draw uses its vertex
+inputs, else the V#s it just read — takes every range and the index buffer that is ≤16 KiB,
+read-only, not GPU-written and not mirrored, and `memcpy`s it into the ring; the packet carries
+`{begin, end, offset}` (`render/vk_ring_ranges.h`). Stage B looks a range up (`FindRingRange`, a
+covering match, so a different merge of the same streams still hits) and binds `RingHandle(0)` at
+the copy's offset: no `ObtainBuffer`, no in-place read note, no `IsBufferAccessed` barrier.
+
+`BB_PIPE_BUFFERS=0` leaves the ranges to stage B. What it is worth on a Deck is not measured yet;
+this doc's own profiling says stage B is the limiter only where the CPU is (12+ threads), and on
+the Deck it is under half a frame, so expect p99 and hitches rather than FPS. The descriptor
+writes, the guest buffers too big for the ring and the texture side stay on stage B until stage A
+owns the buffer cache (the large half of the step).
+
 ## Engine short paths: investigation (2026-09-30, in progress)
 
 - The eboot has no symbols but links Sony's Gnmx (`sdk\target\src\gnmx\gfxcontext.cpp`,

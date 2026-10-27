@@ -60,6 +60,9 @@ Already on by default here, because the Deck is what they were tuned for:
   through its loads and areas with no crash and no guest fault;
 - draws with nothing to render into are dropped before they become packets (`BB_EMPTY_DRAWS=0`
   turns that off; `BB_TOGGLE_FILE` with `0 0` is the reference build);
+- the vertex ranges and the index buffer of a draw are copied into the constant ring on the GPU
+  command thread, so the draw recording thread binds them without a buffer-cache lookup
+  (`BB_PIPE_BUFFERS=0` leaves them to it);
 - at 720p the startup resolution patch is used — the fastest path, and the live resolution path
   does not engage below 1080p anyway.
 
@@ -76,6 +79,7 @@ listed so that it can be A/B'd rather than trusted:
 | Draws with nothing to render into dropped before they become packets | on | `BB_EMPTY_DRAWS=0`; a full reference build is `BB_TOGGLE_FILE=<file>` with `0 0` in it |
 | HLE image copies for the game's compute copy shaders | on | `BB_HLE_OFF=1` (counts: `BB_HLE_STATS=1`, the declined copies: `BB_IMAGE_COPY_LOG=1`) |
 | Two-stage draw pipeline (decode, then draw recording) | on at 8+ hardware threads | `BB_DRAW_PIPE=0` |
+| Draw vertex ranges and index buffer copied on the GPU command thread instead of obtained on the recording thread | on | `BB_PIPE_BUFFERS=0` — the recording thread obtains them (needs the draw pipeline: `BB_DRAW_PIPE=0` turns both off) |
 | Two Vulkan recording threads with async submit | on at 8 hardware threads | `BB_VK_RECORD_THREADS=1`, `BB_ASYNC_SUBMIT=0`, `BB_VK_SEGMENT_KB=N` (64) |
 | New pipelines compiled off the GPU thread | on | `BB_ASYNC_PIPELINES=0` — compile at once, the game waits |
 | Motion vectors reused for an unchanged pose | on | `BB_OBJECT_MOTION=0` — motion vectors off entirely, which changes the picture |
@@ -85,6 +89,19 @@ listed so that it can be A/B'd rather than trusted:
 The occlusions and the empty-target skip print what they are doing at startup, and
 `BB_FRAME_STATS=1` (`BB_FRAME_LOG=<csv>`) is what shows whether a switch helped: the flag is meant
 for an A/B in the same spot, not for shipping the game with a feature off.
+
+Added 2026-10-26 for the stage-A draw inputs (`OPTIMIZATION_GOALS.md` §3):
+
+- `BB_PIPE_BUFFERS` — on by default; any value starting with `0` turns it off. On, the GPU command
+  thread copies each draw's vertex ranges and index buffer (≤16 KiB, read-only, not GPU-written)
+  into the constant ring and the draw recording thread binds them from there instead of obtaining
+  them; off, the recording thread obtains them as before. Needs the draw pipeline
+  (`BB_DRAW_PIPE=0` turns it off). Prints a line at startup when set.
+- Its diagnostics, on the existing switches: `BB_FRAME_STATS=1` prints `draw inputs on stage A per
+  packet: N ranges copied, M bound; obtained on stage B K` (a copy that is not bound was wasted);
+  `BB_SECTIONS=1` adds `A: ranges`, `A: range checks` and `A: range copy` on the GPU command
+  thread to compare with `vertex`, `index` and `ObtainBuffer` on the recording thread. Test:
+  `ninja -C out/gpu ring-ranges-test`.
 
 `-march=znver2` enables instructions only AMD implements, so the Deck build does not run on Intel.
 `build.sh` stays the portable build for other machines.

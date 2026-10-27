@@ -533,11 +533,14 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     }
 
     // The streams' memory in as few host ranges as possible: overlapping and touching streams
-    // share one (a draw-preparation worker merged them already).
+    // share one (a draw-preparation worker merged them already). A range the GPU command thread
+    // copied into the constant ring (§3, vk_ring_ranges.h) carries `ring` and is bound from there.
     struct Range {
         VAddr begin;
         VAddr end;
         const VideoCore::Buffer* buffer = nullptr;
+        vk::Buffer handle = VK_NULL_HANDLE;
+        const RingRange* ring = nullptr;
         u64 offset = 0;
     };
     VertexInputs<Range> ranges;
@@ -563,7 +566,18 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
     }
     for (auto& range : ranges) {
         const u64 size = memory->ClampRangeSize(range.begin, range.end - range.begin);
+        if (const RingRange* ring =
+                size != 0 && constant_ring ? FindRingRange(range.begin, range.end) : nullptr) {
+            // Copied into the constant ring by the GPU command thread: bound from there. No
+            // buffer-cache lookup, no in-place read to note and no barrier (the copy was
+            // flushed, and the ring is not written by the GPU).
+            range.ring = ring;
+            range.handle = RingHandle(0);
+            BbStats::ring_ranges_bound.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
         std::tie(range.buffer, range.offset) = buffer_cache.ObtainBuffer(range.begin, size, false);
+        BbStats::draw_ranges_obtained.fetch_add(1, std::memory_order_relaxed);
         if (InPlaceReads::Enabled()) {
             InPlaceReads::Note(range.begin, size, scheduler.CurrentTick(), 0, 2);
         }
@@ -622,13 +636,25 @@ void Rasterizer::ResolveVertexBuffers(const GraphicsPipeline* pipeline,
                             return buffer.base_address >= r.begin && buffer.base_address < r.end;
                         });
             ASSERT(range != ranges.end());
-            v.host_buffers.push_back(range->buffer->Handle());
-            v.host_offsets.push_back(range->offset + buffer.base_address - range->begin);
+            if (range->ring) {
+                // Offsets are relative to where the copy starts, which may be before the range
+                // stage B merged (the two merges of the same streams can differ); the size stops
+                // at the end of the copy.
+                v.host_buffers.push_back(range->handle);
+                v.host_offsets.push_back(range->ring->offset + buffer.base_address -
+                                         range->ring->begin);
+                v.host_sizes.push_back(
+                    std::min<u64>(buffer.GetSize(), range->ring->end - buffer.base_address));
+            } else {
+                v.host_buffers.push_back(range->buffer->Handle());
+                v.host_offsets.push_back(range->offset + buffer.base_address - range->begin);
+                v.host_sizes.push_back(buffer.GetSize());
+            }
         } else {
             v.host_buffers.push_back(VK_NULL_HANDLE);
             v.host_offsets.push_back(0);
+            v.host_sizes.push_back(buffer.GetSize());
         }
-        v.host_sizes.push_back(buffer.GetSize());
         v.host_strides.push_back(buffer.GetStride());
     }
     v.num_buffers = static_cast<u32>(guest_buffers.size());
@@ -653,7 +679,17 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     const u32 index_size = index16 ? sizeof(u16) : sizeof(u32);
     const VAddr address = regs.index_base_address.Address<VAddr>() + u64(index_offset) * index_size;
     const u32 size = regs.num_indices * index_size;
+    const vk::IndexType type = index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32;
+    if (const RingRange* ring =
+            size != 0 && constant_ring ? FindRingRange(address, address + size) : nullptr) {
+        // Copied into the constant ring by the GPU command thread (§3): bound from there, which
+        // also means no barrier and no note for ResetBindings.
+        index_bind = {RingHandle(0), ring->offset, type};
+        BbStats::ring_ranges_bound.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     const auto [buffer, offset] = buffer_cache.ObtainBuffer(address, size, false);
+    BbStats::draw_ranges_obtained.fetch_add(1, std::memory_order_relaxed);
     needs_barrier |= runtime.IsBufferAccessed(buffer, offset, size);
     if (InPlaceReads::Enabled()) {
         InPlaceReads::Note(address, size, scheduler.CurrentTick(), 0, 3);
@@ -661,7 +697,7 @@ void Rasterizer::ResolveIndexBuffer(u32 index_offset) {
     // Tracked as a graphics read after the draw (ResetBindings): an upload into a mirrored index
     // range must not overtake the draw's fixed-function index fetches.
     bound_buffers.emplace_back(buffer, offset, size, false);
-    index_bind = {buffer->Handle(), offset, index16 ? vk::IndexType::eUint16 : vk::IndexType::eUint32};
+    index_bind = {buffer->Handle(), offset, type};
 }
 
 void Rasterizer::ResetBindings(bool is_compute) {

@@ -179,6 +179,11 @@ inline std::atomic<std::uint64_t> reduced_draws{0}, scene_draws{0};
 /// target) and their stages write no memory: what the draw would have done cannot be seen
 /// (rasterizer.cpp, experiment bit 33), and the vertices it would have drawn.
 inline std::atomic<std::uint64_t> no_target_draws{0}, no_target_vertices{0};
+/// Draw inputs (§3 of OPTIMIZATION_GOALS.md, BB_PIPE_BUFFERS): vertex/index ranges the GPU command
+/// thread copied into the constant ring, the copies the recording thread bound from it, and the
+/// ranges it obtained itself (a copy it could not use shows as copied but not bound).
+inline std::atomic<std::uint64_t> ring_ranges_copied{0}, ring_ranges_bound{0},
+    draw_ranges_obtained{0};
 /// Wall time spent blocked in the scheduler (ns): waiting for the recording thread to drain,
 /// for host copies before a submission or fence, and for GPU ticks.
 inline std::atomic<std::uint64_t> sync_recording_ns{0}, host_copies_wait_ns{0}, tick_wait_ns{0},

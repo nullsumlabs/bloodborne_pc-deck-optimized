@@ -30,6 +30,7 @@ class CommandProcessor;
 #include "upscale/vk_object_motion.h"
 #include "render/vk_draw_pipe.h"
 #include "render/vk_draw_prep.h"
+#include "render/vk_ring_ranges.h"
 #include "upscale/vk_temporal_upscaler.h"
 #include "render/pipeline_cache.h"
 #include "render/scheduler.h"
@@ -423,6 +424,16 @@ private:
     void CollectRingBindings(const Shader::Info& stage, const PreparedDraw* prepared,
                              boost::container::static_vector<RingBinding, Shader::NUM_BUFFERS>& out,
                              const Gcn::ComputeProgram* cs = nullptr);
+    /// bbport (§3 of OPTIMIZATION_GOALS.md): the vertex stream ranges and the index buffer of the
+    /// draw, merged here as ResolveVertexBuffers merges them and — when small, read-only and not
+    /// GPU-written — copied into the constant ring, so the recording thread binds them without
+    /// ObtainBuffer (vk_ring_ranges.h). BB_PIPE_BUFFERS=0 leaves them to stage B.
+    void CollectRingRanges(const GraphicsPipeline* pipeline, const PreparedDraw* prepared,
+                           std::span<const Gcn::Buffer> vsharps, bool is_indexed,
+                           u32 index_offset,
+                           boost::container::static_vector<RingRange, Shader::NUM_BUFFERS + 1>& out);
+    /// Stage B: the copy stage A made of [begin, end) in the packet being recorded, or null.
+    [[nodiscard]] const RingRange* FindRingRange(VAddr begin, VAddr end) const;
     void PrintPipeStats();
     /// The registers of the draw being recorded: stage B's copy there, else Liverpool's.
     const Gcn::Regs& Regs() const;
@@ -810,6 +821,10 @@ private:
     u32 num_ring_stages = 0;
     /// bbport: the vertex stream V#s of the packet being recorded (stage B; empty elsewhere).
     std::span<const Gcn::Buffer> packet_vsharps;
+    /// The vertex and index ranges stage A copied into the ring for the packet being recorded
+    /// (stage B; empty elsewhere).
+    const RingRange* packet_ranges = nullptr;
+    u32 num_packet_ranges = 0;
     const RingBinding* FindRingBinding(const Shader::Info& stage, u32 index) const {
         for (u32 i = 0; i < num_ring_stages; ++i) {
             if (ring_stages[i].info == &stage) {

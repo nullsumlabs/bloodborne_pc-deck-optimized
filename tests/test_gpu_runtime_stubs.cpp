@@ -37,6 +37,9 @@ unsigned runtime_memory_trap_reasons(uintptr_t) { std::abort(); }
 int runtime_memory_direct_phys(uintptr_t, uint64_t*, uintptr_t*) { std::abort(); }
 void* runtime_memory_backing_pointer(uint64_t) { std::abort(); }
 uintptr_t runtime_memory_resolve(const char*) { std::abort(); }
+// The render resource cache's direct memory past the game's (bbport_guest_hooks.cpp): a test has
+// no guest process to take it from.
+int runtime_extra_direct_map(uint64_t, uint64_t, void** out) { if (out) *out = nullptr; return -1; }
 void runtime_wait_report(double) {}
 void runtime_sleep_stats(uint64_t* calls, uint64_t* ns) { *calls = 0; *ns = 0; }
 uint64_t runtime_heap_growths() { return 0; }
