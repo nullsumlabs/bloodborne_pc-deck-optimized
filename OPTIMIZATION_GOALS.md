@@ -6,7 +6,8 @@ downgrades). First compiled 2026-10-15; this version rewritten **2026-10-21** fo
 checked line by line against that tree, with §1 ported and §4 implemented on **2026-10-22**,
 both of those measured on a real Deck on **2026-10-23**, the narrow occlusion label ordering
 made the default again on **2026-10-25** after the package carrying it was played normally, and
-§3's cheap half implemented on **2026-10-26** (on by default, `BB_PIPE_BUFFERS=0` to disable it).
+§3's cheap half implemented on **2026-10-26** (on by default, `BB_PIPE_BUFFERS=0` to disable it;
+an A/B on **2026-10-29** showed it flickering little white lines — §3).
 Every item below is a measurement that still stands, a missing piece of code, or a knob that has
 not been swept.
 
@@ -264,6 +265,14 @@ constants), any range the GPU has written or will write, mirrored ones, and the 
 `BB_PIPE_BUFFERS=0` leaves the ranges to stage B as before; `=1` forces them back on in a run with
 the variable inherited as 0. It needs the two-stage pipeline (stage A only exists then), so
 `BB_DRAW_PIPE=0` turns it off with the pipeline.
+
+**Reported 2026-10-29: it shows as a visual error.** With the copies on, little white pixel lines
+flicker around the screen, worst on the 2-D display windows — the shops and the inventory. Nothing
+on this host reproduces it and the cause is not diagnosed; it is the shape a stale copy makes (a
+range the guards let through that the game writes after stage A copied it), and vertex and index
+bytes are what a 2-D window rewrites every frame. So the switch stays an A/B switch, and `=0` is
+the side to play a session on until it is explained — the `dist/*-pipebuffers.AppImage` packages of
+2026-10-27 carry it on, as does an unset variable in this tree.
 
 **Variables and counters added for it (2026-10-26).** One env var; the rest are readings of the
 existing diagnostics. Sections are `BB_SECTIONS=1` (`gpu/shim/bbport_sections.h`).
@@ -554,16 +563,18 @@ A/B, because a microbench win that does not survive the frame is not a win.
 The fork's own switches are the last group of the launcher's settings page ("Оптимизации форка"),
 below the developer rows: one switch each, on as shipped, with a one-line note under the title. A
 switch there is for an A/B, not for shipping the game with a feature off — `BB_FRAME_STATS` above
-shows whether one helped. The launcher writes each variable both ways (except the label order's
-default, `2`), so its choice beats a variable inherited from the shell; the extra-variables row
-still comes last.
+shows whether one helped. The launcher writes each variable both ways (the label order's switch
+writes `1` when on, `2` when off), so its choice beats a variable inherited from the shell; the
+extra-variables row still comes last. Every switch in the group reads the same way — on is the
+port's own (default) side — with one exception: the occlusion label order's switch is titled by the
+PS4's order, so it ships **off**, and off is the port's side (`=2`). On is the PS4's order (`=1`).
 
 | Option | Env | What it gives, and what it costs |
 |---|---|---|
 | Occlusion queries and predication (§4) | `BB_OCCLUSION_QUERIES=0` | The queries cull hidden draws; off is the fixed sequence, everything visible |
-| Occlusion label ordering: order before every label, as on the PS4 | `BB_OCCLUSION_LABEL_ORDER=1` | The retreat from the default (§4): ~0.1 ms/frame, and it arms no traps. Not a win — the switch to reach for if a label ever reads stale counters |
+| Occlusion label order, as on the PS4 (§4) | `BB_OCCLUSION_LABEL_ORDER=2` when off (the default) | The port's own order, **off** (the default since 2026-10-25): the results are written before a label only where the game polls one, ~0.1 ms/frame cheaper than the PS4's. On is that order — before every label, and it arms no traps — not a win, the retreat to reach for if a label ever reads stale counters. The one switch in the group where the port's side is off |
 | Empty-target draw skip (§1) | `BB_EMPTY_DRAWS=0` (experiment bit 33 in front of it) | **On** by default: 16–17 draws a frame, 0.6–1.2 ms/frame as measured 2026-10-16. A switch here is for an A/B against the reference, not for shipping it off |
-| Vertex/index ranges on stage A (§3) | `BB_PIPE_BUFFERS=0` | **On** by default since 2026-10-26: stage A copies each draw's vertex ranges and index buffer into the constant ring (≤16 KiB, read-only, not GPU-written), so stage B binds them without `ObtainBuffer`. A p99/hitch item on Deck (stage B ~49% busy), not an FPS one; the switch is for the A/B. The guest buffers too big for the ring stay on stage B until stage A owns the buffer cache |
+| Vertex/index ranges on stage A (§3) | `BB_PIPE_BUFFERS=0` | **On** by default since 2026-10-26: stage A copies each draw's vertex ranges and index buffer into the constant ring (≤16 KiB, read-only, not GPU-written), so stage B binds them without `ObtainBuffer`. A p99/hitch item on Deck (stage B ~49% busy), not an FPS one; the switch is for the A/B. **It causes visual errors:** little white pixel lines flicker around the screen, especially on the 2-D windows — the shops, the inventory (§3) — so `=0` is the side to play a session on until that is explained. The guest buffers too big for the ring stay on stage B until stage A owns the buffer cache |
 | HLE image copies (§2) | `BB_HLE_OFF=1` (the switch writes `1`; the variable is a mask) | Copies of the game's compute copy shaders run as the port's own; off — the game's shaders |
 | Deck code generation | `BB_DECK_MARCH` / `BB_DECK_MTUNE` at build time (`build_steam_deck.sh`) | Not a runtime switch — it needs a second binary in the package (`-march=znver2 -mtune=znver2`, the current build). CPU-side only; the 2026-10-21 microbench (§11) puts it large on AVX2-shaped loops and negative on 1 KiB copies |
 
@@ -597,9 +608,9 @@ All of these are env vars in this tree; one session each, same spot, `frames.csv
 | A/B | Env | What it prices |
 |---|---|---|
 | Occlusion queries | `BB_OCCLUSION_QUERIES=0` | §4: cost of queries and the culling they enable |
-| Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=1` | §4: the default is the narrow mode (priced 2026-10-23 at ~0.1 ms/frame); `=1` is the PS4 ordering, the other side of that A/B, `=0` orders nothing |
+| Occlusion label order | `BB_OCCLUSION_LABEL_ORDER=1` | §4: the default is the narrow mode (priced 2026-10-23 at ~0.1 ms/frame, and it is the off side of the launcher's switch, which is titled by the PS4's order); `=1` is the PS4 ordering, the other side of that A/B, `=0` orders nothing |
 | Empty-target draw skip | `BB_EMPTY_DRAWS=0` | §1: what the skip is worth on this build (0.6–1.2 ms/frame is the 2026-10-16 figure and has never been A/B'd on 0.6) |
-| Vertex/index ranges on stage A | `BB_PIPE_BUFFERS=0` | §3: what the moved buffer work is worth (`stage A waited %`, `stage B busy %`, the `ranges copied/bound/obtained` line) — expect p99, not FPS, on Deck |
+| Vertex/index ranges on stage A | `BB_PIPE_BUFFERS=0` | §3: what the moved buffer work is worth (`stage A waited %`, `stage B busy %`, the `ranges copied/bound/obtained` line) — expect p99, not FPS, on Deck. The A/B that reported the flickering white lines on 2026-10-29, so compare the picture too, not only `frames.csv` |
 | HLE compute copies | `BB_HLE_OFF=1` | §2: what the image-copy detector is worth now |
 | Draw pipeline | `BB_DRAW_PIPE=0` | The two-stage split itself, on Deck |
 | Recording | `BB_VK_RECORD_THREADS=1..3`, `BB_VK_SEGMENT_KB=16..128` | §7 |

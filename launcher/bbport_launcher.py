@@ -194,7 +194,9 @@ DEFAULTS = {
     "readbacks": "",
     "preupload": "",
     # The fork's own renderer switches (the group at the bottom of the settings page): on as
-    # shipped, there so that one can be turned off for an A/B.
+    # shipped, there so that one can be turned off for an A/B. The occlusion-order switch reads
+    # the other way round — it is titled by the PS4's order, so it is off as shipped: off is the
+    # port's own order (BB_OCCLUSION_LABEL_ORDER=2), on is before every label (=1).
     "occlusion_queries": True,
     "occlusion_label_order": False,
     "empty_draws": True,
@@ -250,15 +252,24 @@ INI_DEFAULTS = {
 
 def load_settings():
     settings = dict(DEFAULTS)
+    saved = {}
     try:
-        settings.update(json.loads(CONFIG_FILE.read_text(encoding='utf-8')))
+        saved = json.loads(CONFIG_FILE.read_text(encoding='utf-8'))
+        settings.update(saved)
     except (OSError, ValueError):
-        pass
+        saved = {}
     # Addresses saved as the old defaults (shadPS4's public shadNet, which accepts only shadPS4's
     # own builds since 2026-10-12, and The Hunter's Dream) become the new ones.
     for key, old_values in online.OLD_DEFAULTS.items():
         if str(settings.get(key, '')).strip() in old_values:
             settings[key] = DEFAULTS[key]
+    # The occlusion-order switch is titled by the PS4's order ("occlusion_label_order" on is
+    # before every label, BB_OCCLUSION_LABEL_ORDER=1; off is the port's order, =2). A build on
+    # 2026-10-29 saved it the other way round as "occlusion_label_polled"; a saved choice comes
+    # back inverted so that a config keeps its mode, and the other key is dropped either way.
+    if "occlusion_label_polled" in saved and "occlusion_label_order" not in saved:
+        settings["occlusion_label_order"] = not saved["occlusion_label_polled"]
+    settings.pop("occlusion_label_polled", None)
     return settings
 
 
@@ -402,8 +413,9 @@ def game_environment(s):
     # The fork's own renderer switches. Written both ways (not only when off) so that the
     # launcher's choice beats a variable inherited from the shell; extra_env still comes last.
     env["BB_OCCLUSION_QUERIES"] = "1" if s.get("occlusion_queries", True) else "0"
-    # 1 = before every label (the PS4's order), 2 = only the polled ones (the default), 0 = never.
-    env["BB_OCCLUSION_LABEL_ORDER"] = "1" if s.get("occlusion_label_order") else "2"
+    # 1 = before every label (the PS4's order), 2 = only the labels the game reads (the default),
+    # 0 = never. The switch is titled by the PS4's order, so on writes 1.
+    env["BB_OCCLUSION_LABEL_ORDER"] = "1" if s.get("occlusion_label_order", False) else "2"
     env["BB_EMPTY_DRAWS"] = "1" if s.get("empty_draws", True) else "0"
     env["BB_PIPE_BUFFERS"] = "1" if s.get("pipe_buffers", True) else "0"
     env["BB_HLE_OFF"] = "0" if s.get("hle_copies", True) else "1"
@@ -973,15 +985,20 @@ class LauncherWindow(Adw.ApplicationWindow):
         # an A/B (BB_FRAME_STATS on the developer rows above shows whether it helped).
         fork = Adw.PreferencesGroup(
             title=tr("Оптимизации форка"),
-            description=tr("Включены по умолчанию; выключение — для сравнения (A/B)"))
+            description=tr("Включены по умолчанию; порядок окклюзии — наоборот "
+                            "(выкл. — режим порта). Выключение — для сравнения (A/B)"))
         self.occlusion_row = Adw.SwitchRow(
             title=tr("Запросы окклюзии"),
             subtitle=tr("Скрытые объекты отсекаются на GPU; выкл. — как в 0.3"),
             active=self.settings.get("occlusion_queries", True))
         fork.add(self.occlusion_row)
+        # The one switch in the group that reads the other way round: it is titled by the PS4's
+        # order, so off (the state it ships in) is the port's order — only the labels the game
+        # reads, ~0.1 ms/frame cheaper and no traps armed — and on is before every label, the
+        # retreat if a label ever reads stale counters.
         self.occlusion_order_row = Adw.SwitchRow(
             title=tr("Порядок окклюзии как на PS4"),
-            subtitle=tr("Вкл. — перед каждой меткой; выкл. — только читаемые"),
+            subtitle=tr("Вкл. — перед каждой меткой; выкл. — только читаемые (по умолчанию)"),
             active=self.settings.get("occlusion_label_order", False))
         fork.add(self.occlusion_order_row)
         self.empty_draws_row = Adw.SwitchRow(
@@ -989,9 +1006,12 @@ class LauncherWindow(Adw.ApplicationWindow):
             subtitle=tr("Нет цвета и глубины — рисовать нечего; 0,6–1,2 мс/кадр"),
             active=self.settings.get("empty_draws", True))
         fork.add(self.empty_draws_row)
+        # A/B only, per the 2026-10-29 report: with the copies on, little white pixel lines flicker
+        # around the screen, worst on the 2-D windows (the shops, the inventory).
         self.pipe_buffers_row = Adw.SwitchRow(
             title=tr("Буферы отрисовки на потоке GPU"),
-            subtitle=tr("Вершины и индексы готовятся на потоке команд"),
+            subtitle=tr("Вершины и индексы на потоке команд; в A/B — мигающие белые линии, "
+                         "особенно в магазинах и инвентаре"),
             active=self.settings.get("pipe_buffers", True))
         fork.add(self.pipe_buffers_row)
         self.hle_copies_row = Adw.SwitchRow(
